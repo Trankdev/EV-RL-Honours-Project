@@ -17,3 +17,7 @@ Scripts - contains Evaluation, Training and Utils sub folders
 src - RL environment, contains core and agents sub folders
   - agents - contains RL agent algorithm code
   - core - contains environment/state file (env.py), environment assisting file (parlenv.py), environment observation file (Observations.py) and rewards file (Rewards.py)
+      - env.py - Core environment, World class maintains all information about SUMO
+      - parlenv.py - Parallel/Multi Agent RL env file - enables each traffic light to = one agent
+      - Observations.py - This is what the agent(s) sees (state given to agent)
+      - Rewards.py - This computes agent(s) reward
