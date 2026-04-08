@@ -1,0 +1,6 @@
+sumo-rl
+stable-baselines3
+gymnasium
+matplotlib
+seaborn
+shimmy
