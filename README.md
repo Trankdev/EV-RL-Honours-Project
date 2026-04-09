@@ -15,10 +15,13 @@ Scripts - contains Evaluation, Training and Utils sub folders
   - Evaluation - used after Agent is trained and is to test the agent
   - Utils - misc. file for plotting results and other utilities
 
-src - RL environment, contains core and agents sub folders
-  - agents - contains RL agent algorithm code
-  - core - contains environment/state file (env.py), environment assisting file (parlenv.py), environment observation file (Observations.py) and rewards file (Rewards.py)
-      - env.py - Core environment, World class maintains all information about SUMO
-      - parlenv.py - Parallel/Multi Agent RL env file - enables each traffic light to = one agent
-      - Observations.py - This is what the agent(s) sees (state given to agent)
-      - Rewards.py - This computes agent(s) reward
+src – Reinforcement Learning environment and agents
+  - agents – Contains RL agent implementations
+      - DQN – Deep Q-Network (value-based, single-agent)
+      - MAPPO – Multi-Agent Proximal Policy Optimisation (actor-critic, multi-agent)
+
+  - core – Environment definition and supporting components
+      - env.py – Core environment. Defines the World class which maintains the full SUMO simulation state
+      - parlenv.py – Parallel multi-agent environment wrapper. Treats each traffic light as an independent agent
+      - Observations.py – Defines the observation/state representation provided to agents
+      - Rewards.py – Defines reward functions used to train agents
