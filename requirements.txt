@@ -1,6 +1,21 @@
-sumo-rl
-stable-baselines3
+# Core RL framework
+torch
+numpy
 gymnasium
+
+# SUMO traffic simulation Python bindings
+# Note: Eclipse SUMO must be installed separately (https://sumo.dlr.de)
+traci
+sumolib
+
+# Multi-agent RL (PaddlePaddle PARL)
+parl
+
+# Data & visualization
+pandas
 matplotlib
 seaborn
-shimmy
+
+# Utilities
+networkx
+PyYAML
