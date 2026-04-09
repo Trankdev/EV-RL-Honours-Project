@@ -11,9 +11,9 @@ Experiments - Where past trainings are saved. Subfolders should be of the form A
 Scenarios - All relevant SUMO files for a scenario. Each Scenario should be it's own folder. (Could have subfolder(s) for differing demands/rou.xml files for a given network/net.xml file??)
 
 Scripts - contains Evaluation, Training and Utils sub folders
-  - Training - used to train the agent
-  - Evaluation - used after Agent is trained and is to test the agent
-  - Utils - misc. file for plotting results and other utilities
+  - Training - Used to train the agent (e.g. MAPPO or DQN). Produces trained models, logs, and configuration files.
+  - Evaluation - Used after the agent is trained to test its performance. Includes scripts for different algorithms (DQN and MAPPO) and reports metrics such as reward, ambulance travel time, and civilian waiting time.
+  - Utils - Contains utility scripts for plotting and analysing results (e.g. comparing baseline vs trained agent performance).
 
 src – Reinforcement Learning environment and agents
   - agents – Contains RL agent implementations
