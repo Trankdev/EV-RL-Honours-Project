@@ -2,13 +2,22 @@
 Repository for EV RL Honours project work
 ----------------------------------------------
 
-Configs - Stores hyperparameters and experiment configuration files (.yaml). Defines model, algorithm, observation, reward, and training settings. Used as input to training and evaluation scripts
+Configs - Stores hyperparameters and experiment configuration files (.yaml). 
+        - Defines model, algorithm, observation, reward, and training settings. Used as input to training and evaluation scripts
 
 Evaluations - Where past evaluations are saved. 
 
-Experiments - Stores results from training runs. Subfolders follow the format: AgentName_Kvalue_Zvalue_seed_date_misc. Each experiment typically contains: models/ (saved checkpoints), logs/ (training metrics), configs/ (used configuration files)
+Experiments - Stores results from training runs. 
+            - Subfolders follow the format: AgentName_Kvalue_Zvalue_seed_date_misc. 
+            - Each experiment typically contains: 
+              - models/ (saved checkpoints)
+              - logs/ (training metrics)
+              - configs/ (used configuration files)
 
-Scenarios - Contains all SUMO scenario files. Each scenario is stored in its own folder, Includes: .net.xml (road network), .rou.xml (traffic demand). May include multiple demand files for the same network
+Scenarios - Contains all SUMO scenario files. Each scenario is stored in its own folder
+          - Includes: 
+            - .net.xml (road network)
+            - .rou.xml (traffic demand) - May include multiple demand files for the same network
 
 Scripts - contains Evaluation, Training and Utils sub folders
   - Training - Used to train the agent (e.g. MAPPO or DQN). Produces trained models, logs, and configuration files.
