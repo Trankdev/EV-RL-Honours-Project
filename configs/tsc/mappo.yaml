@@ -1,0 +1,71 @@
+# ==================== Model Architecture ====================
+model:
+  name: "MAPPO"
+  network:
+    hidden_dim: 128
+    use_rnn: true
+
+# ==================== MAPPO Algorithm ====================
+algorithm:
+  name: "MAPPO"
+  gamma: 0.99
+  lr: 0.0003
+  common_reward: true
+
+  ppo:
+    eps_clip: 0.2
+    epochs: 4
+    entropy_coef: 0.01
+    q_nstep: 5
+    max_grad_norm: 10.0
+  
+  observation:
+    obs_to_subscribe: ["lane_count"]
+    normalize: true
+    norm_params: {}
+      # lane_count:
+      #   norm: 5.0
+      #   clip: 2.0
+   
+  reward:
+    reward_to_subscribe: ["lane_waiting_count"]
+    reward_weights: [1.0]
+    scale: 2000.0
+    clip_range: [-1.0, 1.0]
+
+# ==================== Training Configuration ====================
+training:
+  max_episodes: 200
+  save_interval: 50
+  seed: 12
+
+# ==================== Curriculum Learning ====================
+curriculum:
+  # PLR 参数
+  replay_prob: 0.5        # 重放旧任务的概率权重
+  new_task_prob: 0.1      # 生成全新任务的概率
+  score_window: 10        # TD error 滑动窗口大小
+  buffer_size: 50          # 固定buffer大小
+  # new_level_prob: 0.3      # 生成新level的概率 P_D(d=0)
+  # replay_prob: 0.2         # staleness权重
+  score_window: 5          # 分数滑动窗口
+  # 任务生成参数
+  scale_range: [0.5, 2.0]       # 流量缩放范围
+  max_disrupted_roads: 5        # 最多中断道路数
+
+# ==================== Environment ====================
+environment:
+  type: "sumo"
+  observation_type: "standard"
+  reward_type: "waiting"
+  sync_mode: true
+
+metadata:
+  description: "MAPPO for multi-agent traffic signal control"
+  notes: |
+    MAPPO (Multi-Agent PPO) 特点:
+    1. 中心化训练，去中心化执行 (CTDE)
+    2. Critic使用全局状态（所有智能体观测拼接）
+    3. Actor基于局部观测独立决策
+    4. PPO的clip机制提供稳定训练
+    5. GAE计算优势函数

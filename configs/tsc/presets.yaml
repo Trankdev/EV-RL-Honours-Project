@@ -1,0 +1,53 @@
+# Pre-defined network architectures (like YOLOv8's variants)
+# Format: [layer_idx, layer_type, from, in_features, out_features, activation, dropout]
+
+architectures:
+  # Small sequential network
+  mlp_64_32:
+    - [0, Linear, [-1], auto, 64, relu, null]
+    - [1, Linear, [-1], 64, 32, relu, null]
+    - [2, Linear, [-1], 32, auto, null, null]
+  
+  # Standard network (reference)
+  mlp_128_64:
+    - [0, Linear, [-1], auto, 128, relu, null]
+    - [1, Linear, [-1], 128, 64, relu, null]
+    - [2, Linear, [-1], 64, auto, null, null]
+  
+  # Large network
+  mlp_256_128_64:
+    - [0, Linear, [-1], auto, 256, relu, null]
+    - [1, Linear, [-1], 256, 128, relu, null]
+    - [2, Linear, [-1], 128, 64, relu, null]
+    - [3, Linear, [-1], 64, auto, null, null]
+  
+  # With dropout
+  mlp_256_128_dropout:
+    - [0, Linear, [-1], auto, 256, relu, 0.2]
+    - [1, Linear, [-1], 256, 128, relu, 0.2]
+    - [2, Linear, [-1], 128, 64, relu, null]
+    - [3, Linear, [-1], 64, auto, null, null]
+  
+  # ResNet-style with residual connection
+  resnet_128:
+    - [0, Linear, [-1], auto, 128, relu, null]
+    - [1, Linear, [-1], 128, 128, relu, null]
+    - [2, Linear, [-1], 128, 128, null, null]
+    - [3, Add, [1, 2], null, null, relu, null]      # Residual: layer1 + layer2
+    - [4, Linear, [-1], 128, auto, null, null]
+  
+  # Skip connection (U-Net style)
+  skipnet_128_64:
+    - [0, Linear, [-1], auto, 128, relu, null]      # Early features
+    - [1, Linear, [-1], 128, 64, relu, null]
+    - [2, Linear, [-1], 64, 32, relu, null]         # Deep features
+    - [3, Concat, [0, 2], null, null, null, null]   # Merge: 128 + 32 = 160
+    - [4, Linear, [-1], 160, auto, null, null]
+  
+  # Multi-branch network
+  multibranch_128_64:
+    - [0, Linear, [-1], auto, 128, relu, null]      # Branch 1
+    - [1, Linear, [-1], auto, 64, relu, null]       # Branch 2 (from input)
+    - [2, Concat, [0, 1], null, null, null, null]   # Merge: 128 + 64 = 192
+    - [3, Linear, [-1], 192, 64, relu, null]
+    - [4, Linear, [-1], 64, auto, null, null]

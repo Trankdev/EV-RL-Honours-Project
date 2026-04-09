@@ -1,0 +1,75 @@
+# ==================== Model Architecture ====================
+model:
+  name: "PPO-Actor-Critic"
+  
+  # Shared feature extractor architecture
+  # [layer_idx, layer_type, from, in_features, out_features, activation, dropout]
+  architecture:
+    - [0, Linear, [-1], auto, 64, relu, null]      # Input -> Hidden1
+    - [1, Linear, [-1], 64, 64, relu, null]        # Hidden1 -> Hidden2
+    # Actor and Critic heads are added automatically in ActorCriticNetwork
+  
+  # 或使用preset
+  # architecture_preset: "mlp_128_64"
+
+# ==================== PPO Algorithm ====================
+algorithm:
+  name: "PPO"
+  
+  # Core parameters
+  gamma: 0.99              # Discount factor
+  learning_rate: 0.0003    # 3e-4
+  
+  # PPO-specific parameters
+  ppo:
+    clip_epsilon: 0.2      # PPO clip parameter
+    value_loss_coef: 0.5   # Value loss coefficient
+    entropy_coef: 0.01     # Entropy bonus coefficient
+    gae_lambda: 0.95       # GAE lambda
+    update_epochs: 4       # Number of epochs per update
+  
+  # Optimizer
+  optimizer:
+    type: "adam"           # "adam" recommended for PPO
+    params:
+      eps: 1.0e-5
+      # amsgrad: false
+  # Regularization
+  regularization:
+    grad_clip: 0.5         # Gradient clipping (important for PPO)
+    weight_decay: null     # L2 regularization
+  
+  # Reward engineering
+  reward:
+    scale: 0.01            # Reward scaling factor
+    clip_range: null       # Clip rewards to [min, max]
+
+# ==================== Training Configuration ====================
+training:
+  max_episodes: 100
+  save_interval: 20
+  eval_interval: 10
+  seed: 42
+  
+  # Logging
+  logging:
+    log_interval: 1
+    tensorboard: false
+    wandb: false
+
+# ==================== Environment ====================
+environment:
+  type: "sumo"
+  observation_type: "presslight"
+  reward_type: "pressure"
+
+# ==================== Metadata ====================
+metadata:
+  description: "PPO configuration for traffic signal control"
+  reference_paper: "Proximal Policy Optimization (Schulman et al.)"
+  created: "2025-01-30"
+  notes: |
+    - PPO is an on-policy algorithm (no replay buffer)
+    - Uses GAE for advantage estimation
+    - Clip parameter 0.2 is standard
+    - Actor-Critic architecture with shared features

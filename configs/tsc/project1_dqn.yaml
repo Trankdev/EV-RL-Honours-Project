@@ -1,0 +1,58 @@
+# configs/tsc/project1_dqn.yaml
+# 项目1 DQN配置文件
+
+name: "project1_std_dqn"
+description: "项目1风格DQN - 考虑等待时间标准差"
+
+# 环境配置
+environment:
+  sumo_config: "scenarios/emergency_vehicle/sumo_config.json"
+  interface: "traci"
+  seed: 42
+  
+  # 观测订阅
+  obs_to_subscribe:
+    - "lane_vehicles"
+    - "lane_waiting_time_count"
+  
+  # 奖励订阅
+  reward_to_subscribe:
+    - "project1_std_reward"
+  
+  algorithm_name: "project1_std_dqn"
+
+# 项目1核心参数
+reward_params:
+  K: 0.5  # 标准差权重
+  Z: 1.0  # 应急车辆惩罚倍数
+
+# DQN参数
+dqn:
+  gamma: 0.999            # 折扣因子
+  lr: 0.001               # 学习率
+  epsilon_start: 1.0      # 初始探索率
+  epsilon_decay: 0.9995   # 探索率衰减
+  epsilon_min: 0.01       # 最小探索率
+  
+  replay_size: 10000      # 经验回放大小
+  batch_size: 256         # 批次大小
+  
+  learning_start: 1000    # 开始训练的步数
+  update_model_rate: 1    # 模型更新频率
+  update_target_rate: 10  # 目标网络更新频率
+  
+  grad_clip: 10.0         # 梯度裁剪
+  hidden_dim: 20          # 隐藏层维度
+
+# 训练配置
+training:
+  max_episodes: 1000
+  save_interval: 100
+  log_interval: 10
+
+# 优化器
+optimizer:
+  type: "Adam"  # 或 "RMSprop"
+  params:
+    alpha: 0.9
+    eps: 1e-7
