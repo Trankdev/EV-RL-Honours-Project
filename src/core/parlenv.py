@@ -16,7 +16,7 @@ class PARLSumoEnv:
             algorithm_name=config.get("algorithm_name", None),
             normalize_observation=config.get("normalize_observation", False),
             norm_params=config.get("norm_params", {}),
-            # ✅ 添加这3行：传递奖励配置
+            # ✅ Add these 3 lines: pass reward configuration
             reward_weights = config.get("reward_weights", [1.0]),
             reward_scale = config.get("reward_scale", 1.0),
             reward_clip_range = config.get("reward_clip_range", None),
@@ -50,12 +50,12 @@ class PARLSumoEnv:
         obs = self.env.reset()
         # ✅ 在reset之后封闭指定道路
         if self.closed_edges:
-            print(f"\n🚧 正在封闭道路并重新规划受影响车辆的路线...")
+            print(f"\n🚧 Closing roads and replanning affected vehicle routes...")
             self.env.close_edges(self.closed_edges)
             print()
-        # 处理空字典情况
+        # Handle empty dictionary case
         if not obs:
-            # 如果 reset 返回空字典，执行一次空 step
+            # If reset returns an empty dict, perform a dummy step
             obs, _, _, _ = self.env.step({})
         # return {agent_id: observation.astype(np.float32) 
         #         for agent_id, observation in obs.items()}
@@ -111,22 +111,22 @@ class PARLSumoEnv:
             self.env.close()
     # ============additional functions===================
     def get_closable_edges(self):
-        """返回可以安全封闭的道路ID列表"""
+        """Return list of road IDs that can be safely closed"""
         return self.env.get_closable_edges()
 
     def get_all_edges(self):
-        """返回所有道路ID（包括不能封闭的）"""
+        """Return all road IDs (including those that cannot be closed)"""
         return self.env.all_roads
         
     def set_traffic_scale(self, scale: float):
         """
-        设置流量缩放因子（便捷接口）
+        Set traffic scaling factor (convenience interface)
         
         Args:
-            scale: 流量缩放因子
+            scale: traffic volume multiplier
         """
         self.env.set_traffic_scale(scale)
     
     def get_traffic_scale(self):
-        """获取当前流量缩放因子"""
+        """Get current traffic scaling factor"""
         return self.env.get_traffic_scale()
