@@ -20,6 +20,17 @@ import argparse
 import yaml
 import torch
 
+# ---------------------------------------------------------
+# Force working directory to project root (two levels up)
+# ---------------------------------------------------------
+current_file = os.path.abspath(__file__)
+project_root = os.path.abspath(os.path.join(os.path.dirname(current_file), '..', '..'))
+os.chdir(project_root)        # change Python working directory
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)  # add root to Python path
+
+print(f"Working directory set to: {os.getcwd()}")
+
 from src.agents.MAPPOagent import MAPPOAgent
 from src.core.parlenv import PARLSumoEnv
 from src.core.Rewards import GetRewards
@@ -204,10 +215,10 @@ def test_model(
     sumo_cfg = {
         "name":             "test_emergency_ambulance",
         "dir":              scenario_dir,
-        "roadnetFile":      "draft02.net.xml",
-        "flowFile":         "vtypes.rou.xml,draft02.rou.xml,ambulance.rou.xml",
-        "combined_file":    "draft02.sumocfg",
-        "gui":              gui,
+        "roadnetFile":      "3_intersection_corridor_TR.net.xml",
+        "flowFile":         "vtypes.rou.xml,3_intersection_corridor_TR.rou.xml,ambulance.rou.xml",
+        "combined_file":    "3_intersection_corridor_TR.sumocfg",
+        "gui":              True, # Forces GUI on if set to 'True' otherwise set to 'gui' variable
         "no_warning":       True,
         "decision_interval": 5,
         "min_green":         5,
@@ -402,13 +413,15 @@ Examples:
       --save-results evaluations/my_test.json
 """)
 
-    parser.add_argument('--model-path', type=str, required=True,
+    parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
+                        default='experiments/mappo_ambulance_K0.5_Z3.0_seed42_20260410_165231/models/agent_final.pt',
                         help='Path to the .pt model checkpoint')
+    
     parser.add_argument('--config', type=str,
                         default='configs/tsc/mappo_ambulance.yaml',
                         help='YAML config used during training (default: configs/tsc/mappo_ambulance.yaml)')
     parser.add_argument('--scenario-dir', type=str,
-                        default='scenarios/emergency_vehicle',
+                        default='scenarios/3_intersection_corridor_TR', # change to scenario to be tested on
                         help='SUMO scenario directory')
 
     # K / Z override
