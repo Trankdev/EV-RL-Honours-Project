@@ -20,6 +20,18 @@ import yaml
 import json
 import time
 import torch
+
+# ---------------------------------------------------------
+# Force working directory to project root (two levels up)
+# ---------------------------------------------------------
+current_file = os.path.abspath(__file__)
+project_root = os.path.abspath(os.path.join(os.path.dirname(current_file), '..', '..'))
+os.chdir(project_root)        # change Python working directory
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)  # add root to Python path
+
+print(f"Working directory set to: {os.getcwd()}")
+
 from src.agents.MAPPOagent import MAPPOAgent
 from src.core.parlenv import PARLSumoEnv
 from src.core.Rewards import GetRewards
@@ -146,9 +158,9 @@ def create_sumo_config(scenario_dir, config_dir, gui=False):
     config = {
         "name": "emergency_mappo_ambulance",
         "dir": scenario_dir,
-        "roadnetFile": "draft02.net.xml",
-        "flowFile": "vtypes.rou.xml,draft02.rou.xml,ambulance.rou.xml",
-        "combined_file": "draft02.sumocfg",
+        "roadnetFile": "3_intersection_corridor_TR.net.xml",
+        "flowFile": "vtypes.rou.xml,3_intersection_corridor_TR.rou.xml,ambulance.rou.xml",
+        "combined_file": "3_intersection_corridor_TR.sumocfg",
         "gui": gui,
         "no_warning": True,
         "decision_interval": 5,
@@ -175,7 +187,7 @@ def main():
     parser.add_argument('--config', type=str, default='mappo_ambulance',
                         help='Config name in configs/tsc/ (default: mappo_ambulance)')
     parser.add_argument('--scenario-dir', type=str,
-                        default='scenarios/emergency_vehicle',
+                        default='scenarios/3_intersection_corridor_TR', # change this when using different scenarios
                         help='SUMO scenario directory')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
 
