@@ -15,6 +15,16 @@ implementations.
 import os
 import sys
 
+import numpy as np
+import argparse
+import yaml
+import json
+import time
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1' #forces CPU usage
+import torch
+import parl
+from parl.utils import ReplayMemory
+
 # ---------------------------------------------------------
 # Force working directory to project root (two levels up)
 # ---------------------------------------------------------
@@ -26,15 +36,6 @@ if project_root not in sys.path:
 
 print(f"Working directory set to: {os.getcwd()}")
 
-import numpy as np
-import argparse
-import yaml
-import json
-import time
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1' #forces CPU usage
-import torch
-import parl
-from parl.utils import ReplayMemory
 from src.agents.DQNagent import StandardQNetwork, DQNAgent
 from src.core.parlenv import PARLSumoEnv
 from src.core.Rewards import GetRewards
@@ -183,9 +184,9 @@ def create_sumo_config(scenario_dir, config_dir, gui=False):
     config = {
         "name": "emergency_dqn_ambulance", 
         "dir": scenario_dir, 
-        "roadnetFile": "draft02.net.xml", # Network file
-        "flowFile": "vtypes.rou.xml,draft02.rou.xml,ambulance.rou.xml", # Route and demand files
-        "combined_file": "draft02.sumocfg", # Combined SUMO config file
+        "roadnetFile": "3_intersection_corridor_TR.net.xml", # Network file
+        "flowFile": "vtypes.rou.xml,3_intersection_corridor_TR.rou.xml,ambulance.rou.xml", # Route and demand files
+        "combined_file": "3_intersection_corridor_TR.sumocfg", # Combined SUMO config file
         "gui": gui, # run with gui?
         "no_warning": True,
         "decision_interval": 5, # Interval between agent actions/decisions
@@ -212,7 +213,7 @@ def main():
     parser.add_argument('--config', type=str, default='dqn_ambulance',
                         help='Config name in configs/tsc/ (default: dqn_ambulance)')
     parser.add_argument('--scenario-dir', type=str,
-                        default='scenarios/emergency_vehicle',
+                        default='scenarios/3_intersection_corridor_TR',
                         help='SUMO scenario directory')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
 
