@@ -9,17 +9,17 @@ import libsumo
 import json
 from .Rewards import GetRewards
 from .Observations import Observation
-class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
+class parse_sumo_config(): # Does static information extraction affect parallel simulation?
     def __init__(self, sumo_config, **kwargs):
         self.sumo_config = sumo_config
         with open(sumo_config) as f:
             self.sumo_dict = json.load(f)
-        # ✅ 从训练脚本接收（必须提供，不从CFG读取）
+        # ✅ Received from training script (must be provided, not read from CFG)）
         self._obs_to_subscribe = kwargs.get('obs_to_subscribe')
         self._reward_to_subscribe = kwargs.get('reward_to_subscribe')
         self._algorithm_name = kwargs.get('algorithm_name')
         self._normalize_observation = kwargs.get('normalize_observation', False)
-        self._norm_params = kwargs.get('norm_params', {})  # ✅ 添加这一行
+        self._norm_params = kwargs.get('norm_params', {})  # ✅ added line
         self.RIGHT = True
         self.traffic_light_ids = []
 
@@ -29,7 +29,7 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
             self.interface_flag = False
         else:
             raise Exception('NOT IMPORTED YET')
-        # ✅ 添加流量缩放因子支持
+        # ✅ Add traffic scaling factor support
         self.traffic_scale = kwargs.get('traffic_scale', 1.0)
         self.seed = kwargs.get('seed', None)
 
@@ -39,8 +39,8 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
         else:            
             self.eng = traci
 
-        # 🔑 在这里调用预解析方法（顺序很重要！）
-        self.traffic_light_ids = self._get_traffic_light_ids()  # 先解析交通灯ID
+        # 🔑 Call preprocessing here (order is important!)
+        self.traffic_light_ids = self._get_traffic_light_ids()  # parse traffic light IDs first
         self.traffic_light_info = self._parse_all_traffic_light_info()
 
     def generate_sumo_cmd(self):
@@ -55,26 +55,26 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
         else:
             sumo_cmd += ['-c', os.path.join(self.sumo_dict['dir'], self.sumo_dict['combined_file']),
                         '--no-warnings', str(self.sumo_dict['no_warning'])]
-        # 1. 控制台显示摘要
+        # 1. Enable console statistics output
         sumo_cmd += ['--duration-log.statistics', 'true']
         
-        # 2. 添加随机种子支持（如果提供）
+        # 2. Add random seed (if provided)
         if self.seed is not None:
             sumo_cmd += ['--seed', str(self.seed)]
         
-        # 3. 添加流量缩放因子（新增）
+        # 3. Add traffic scaling factor
         if self.traffic_scale != 1.0:
             sumo_cmd += ['--scale', str(self.traffic_scale)]
             print(f"⚙️ SUMO 流量缩放因子: {self.traffic_scale}")
             
-        # 4. 添加 additional files 支持（用于 rerouter 等）
+        # 4. Add support for additional files (e.g. rerouter)
         if self.sumo_dict.get('additional_files'):
             additional_files = self.sumo_dict['additional_files']
             if isinstance(additional_files, str):
                 additional_files = [additional_files]
             
             for add_file in additional_files:
-                # 如果是相对路径，加上 dir 前缀
+                # If relative path, prepend directory
                 if not os.path.isabs(add_file):
                     add_file = os.path.join(self.sumo_dict['dir'], add_file)
                 sumo_cmd += ['--additional-files', add_file]
@@ -122,7 +122,7 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
 
     def get_yellow_length(self):
         """从配置文件获取黄灯时长"""
-        return self.sumo_dict.get('yellow_length', 3)  # 默认3秒
+        return self.sumo_dict.get('yellow_length', 3)  # default 3 seconds
     # road/lane related functions: all roads, lanes
     def _get_roads(self):
         # # 方法1: 使用sumolib
@@ -135,7 +135,7 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
         tree = ET.parse(self.get_net_file_address())
         root = tree.getroot()
         road_ids = [edge.get('id') for edge in root.findall('edge') 
-                    if edge.get('id') and not edge.get('function')]  # 排除内部边
+                    if edge.get('id') and not edge.get('function')]  # exclude internal edges
         return road_ids
     
     def _get_lanes(self):
@@ -390,22 +390,26 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
 
     def _parse_all_traffic_light_info(self):
         """
-        预解析所有交通灯的完整信息(lanelinks + road_lane_mapping + lanes)
-        在 __init__ 时调用，避免运行时解析
-        
+        Pre-parse complete information for all traffic lights
+        (lanelinks + road_lane_mapping + lanes).
+    
+        Called during __init__ to avoid parsing at runtime.
+    
         Returns:
-            {tl_id: {
-                'lanelinks': [...],
-                'road_lane_mapping': {...},
-                'roads': [...],
-                'outs': [...],
-                'directions': [...],
-                'lanes': [...],
-                'in_roads': [...],
-                'out_roads': [...]
-            }}
+            {
+                tl_id: {
+                    'lanelinks': [...],
+                    'road_lane_mapping': {...},
+                    'roads': [...],
+                    'outs': [...],
+                    'directions': [...],
+                    'lanes': [...],
+                    'in_roads': [...],
+                    'out_roads': [...]
+                }
+            }
         """
-        # 先获取所有 lanelinks
+        # First get all lanelinks
         all_lanelinks = self._parse_all_lanelinks()
         
         result = {}
@@ -413,52 +417,52 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
         for tl_id in self.traffic_light_ids:
             lanelinks = all_lanelinks.get(tl_id, [])
             
-            # 初始化数据结构
+            # Initialize data structures
             road_lane_mapping = {}
             roads = []
             outs = []
             directions = []
             
-            # 处理每个 link（复制原逻辑）
+            # Process each link (replicates original logic)
             for link_list in lanelinks:
                 if not link_list:
                     continue
                 
-                link = link_list[0]  # 取第一个连接
+                link = link_list[0]  # take the first connection
                 from_lane = link[0]
                 to_lane = link[1]
                 
-                # 提取道路 ID
+                # Extract road IDs
                 from_road = from_lane[:-2]
                 to_road = to_lane[:-2]
                 
-                # 处理 from_lane (入口道路)
+                # Handle from_lane (incoming road)
                 if from_road not in road_lane_mapping:
                     road_lane_mapping[from_road] = []
                     roads.append(from_road)
                     outs.append(False)
                     
-                    # 获取车道形状并计算方向
+                    # Get lane shape and compute direction
                     road_shape = self.get_lane_shape_from_net(from_lane)
                     directions.append(self._get_direction(road_shape, False))
                 
                 if from_lane not in road_lane_mapping[from_road]:
                     road_lane_mapping[from_road].append(from_lane)
                 
-                # 处理 to_lane (出口道路)
+                # Handle to_lane (outgoing road)
                 if to_road not in road_lane_mapping:
                     road_lane_mapping[to_road] = []
                     roads.append(to_road)
                     outs.append(True)
                     
-                    # 获取车道形状并计算方向
+                    # Get lane shape and compute direction
                     road_shape = self.get_lane_shape_from_net(to_lane)
                     directions.append(self._get_direction(road_shape, True))
                 
                 if to_lane not in road_lane_mapping[to_road]:
                     road_lane_mapping[to_road].append(to_lane)
             
-            # 排序道路
+            # Sort roads
             if roads:
                 order = sorted(range(len(roads)),
                             key=lambda i: (directions[i],
@@ -472,7 +476,7 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
                 sorted_outs = []
                 sorted_directions = []
             
-            # 构建有序车道列表和 in/out roads
+            # Build ordered lane list and in/out roads
             lanes = []
             in_roads = []
             out_roads = []
@@ -487,7 +491,7 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
                 else:
                     in_roads.append(road)
             
-            # 存储完整信息
+            # Store full information
             result[tl_id] = {
                 'lanelinks': lanelinks,
                 'road_lane_mapping': road_lane_mapping,
@@ -497,7 +501,7 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
                 'lanes': lanes,
                 'in_roads': in_roads, # in_only==True
                 'out_roads': out_roads,
-                # 🔑 新增：预存储两种模式的 lanes_road_observed
+                # 🔑 NEW: pre-store both observation modes
                 'lanes_road_observed': self.build_lanes_road_observed(sorted_roads, road_lane_mapping, self.RIGHT),
                 'lanes_road_observed_in_only': self.build_lanes_road_observed(in_roads, road_lane_mapping, self.RIGHT),
             }
@@ -506,15 +510,15 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
     
     def get_observation_space_static(self, tl_id: str, obs_to_subscribe: list, in_only: bool = True):
         """
-        静态计算观测空间，无需实例化 Intersection
-        
+        Compute the observation space statically (without instantiating an Intersection).
+    
         Args:
-            tl_id: 交通灯ID
-            obs_to_subscribe: 观测特征列表（如 ['lane_waiting_count'])
-            in_only: 是否只观测入口车道
-            
+            tl_id: Traffic light ID
+            obs_to_subscribe: List of observation features (e.g. ['lane_waiting_count'])
+            in_only: Whether to observe only incoming lanes
+    
         Returns:
-            gym.spaces.Box: 观测空间
+            gym.spaces.Box: Observation space
         """
         if not hasattr(self, 'traffic_light_info'):
             raise ValueError("traffic_light_info not initialized.")
@@ -526,21 +530,21 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
         
         use_presslight = 'presslight' in obs_to_subscribe
         in_only = False if use_presslight else in_only
-        # 🔑 直接从预存储的数据中读取
+        # 🔑 Directly read from pre-stored data
         if in_only:
             lanes_road_observed = tl_info['lanes_road_observed_in_only']
         else:
             lanes_road_observed = tl_info['lanes_road_observed']
         
-        # ✅ 计算观测维度
-        num_phases = len(self.green_phases[tl_id])  # 相位数量
-        phase_onehot_dim = num_phases                # 相位 one-hot 编码
-        min_green_dim = 1                            # 最小绿灯时间标志
-        # ========== 新增：项目1模式特殊处理 ==========
+        # ✅ Compute observation dimensions
+        num_phases = len(self.green_phases[tl_id])  # number of phases
+        phase_onehot_dim = num_phases                # phase one-hot encoding
+        min_green_dim = 1                            # minimum green time flag
+        # ========== NEW: special handling for project1 mode ==========
         algorithm_name = getattr(self, '_algorithm_name', '')
         if 'project1' in algorithm_name.lower() or 'std_dqn' in algorithm_name.lower():
-            # 动态格式: phase(N_phases) + N_in_lanes × 5 features
-            # 车道数由路网自动决定，不硬编码为 12
+            # Dynamic format: phase(N_phases) + N_in_lanes × 5 features
+            # Number of lanes is determined by the network, not hardcoded as 12
             num_phases   = len(self.green_phases[tl_id])
             num_in_lanes = sum(len(lanes) for lanes in tl_info['lanes_road_observed_in_only'])
             ob_length    = num_phases + num_in_lanes * 5
@@ -551,20 +555,20 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
                 dtype=np.float32
             )
         if use_presslight:
-            # PressLight 模式：入口车道×3 + 出口车道×1
+            # PressLight mode: incoming lanes × 3 + outgoing lanes × 1
             num_in_lanes = sum(len(x) for x in tl_info['lanes_road_observed_in_only'])
             
-            # 计算出口车道数
+            # Compute number of outgoing lanes
             out_roads = tl_info['out_roads']
             road_lane_mapping = tl_info['road_lane_mapping']
             num_out_lanes = sum(len(road_lane_mapping.get(road, [])) for road in out_roads)
             
             lane_features_dim = num_in_lanes * 3 + num_out_lanes
         else:
-            # 计算观测维度（模拟 Observation.observation_space() 的逻辑）
-            num_lanes = sum(len(x) for x in lanes_road_observed)  # 总车道数
+            # Compute observation dimension (mimics Observation.observation_space() logic)
+            num_lanes = sum(len(x) for x in lanes_road_observed)  # total number of lanes
             lane_features_dim = len(obs_to_subscribe)*num_lanes
-        # 总维度
+        # Total dimension
         ob_length = phase_onehot_dim+min_green_dim+lane_features_dim 
 
         return gym.spaces.Box(
@@ -573,7 +577,7 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
             dtype=np.float32
         )
     
-    # 预计算 lanes_road_observed（两种模式 in_only==True/False）
+    # Precompute lanes_road_observed (two modes: in_only=True/False)
     def build_lanes_road_observed(self, roads_list, road_lane_mapping, right_traffic):
         lanes_road_observed = []
         for r in roads_list:
@@ -585,55 +589,55 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
                 lanes_road_observed.append(tmp)
         return lanes_road_observed
     def get_obs_to_subscribe(self):
-        """获取观测订阅配置，如果未配置则返回默认值"""
+        """Get observation subscription configuration; return default if not set"""
         return self._obs_to_subscribe
     
     def get_reward_to_subscribe(self):
-        """获取奖励订阅配置，如果未配置则返回默认值"""
+        """Get reward subscription configuration; return default if not set"""
         return self._reward_to_subscribe
     
     # =============================================Road Disruption Functions==========================================
     def get_route_file_path(self):
-        """获取路径文件的路径"""
+        """Get the path to the route file"""
         if not self.sumo_dict.get('combined_file'):
-            # 直接使用flowFile
+            # Directly use flowFile
             return os.path.join(self.sumo_dict['dir'], self.sumo_dict['flowFile'])
         else:
-            # 从combined_file(.cfg)中解析
+            # Parse from combined_file (.cfg)
             cfg_path = os.path.join(self.sumo_dict['dir'], self.sumo_dict['combined_file'])
             try:
                 import xml.etree.ElementTree as ET
                 tree = ET.parse(cfg_path)
                 root = tree.getroot()
                 
-                # 查找route-files标签
+                # Find route-files tag
                 for input_tag in root.findall('.//route-files'):
                     route_file = input_tag.get('value')
                     if route_file:
-                        # 路径可能是相对于cfg文件的
+                        # Path may be relative to cfg file
                         if not os.path.isabs(route_file):
                             route_file = os.path.join(self.sumo_dict['dir'], route_file)
                         return route_file
             except Exception as e:
-                print(f"⚠ 无法从cfg文件解析路径文件: {e}")
+                print(f"⚠ Failed to parse route file from cfg: {e}")
         
         return None
 
     def parse_od_routes_from_file(self):
         """
-        从rou.xml文件解析所有OD对及其路径
+        Parse all OD pairs and their routes from rou.xml file
         
         Returns:
             dict: {(origin, destination): [route1, route2, ...]}
-                其中每个route是边ID的列表
+                  where each route is a list of edge IDs
         """
         route_file = self.get_route_file_path()
         
         if not route_file or not os.path.exists(route_file):
-            print(f"⚠ 路径文件不存在: {route_file}")
+            print(f"⚠ Route file does not exist: {route_file}")
             return {}
         
-        print(f"📄 解析路径文件: {route_file}")
+        print(f"📄 Parsing route file: {route_file}")
         
         od_routes = {}  # {(origin, dest): [route1, route2, ...]}
         
@@ -642,10 +646,10 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
             tree = ET.parse(route_file)
             root = tree.getroot()
             
-            # 解析<route>标签（可能是独立的或在vehicle/flow中）
+            # Parse <route> tags (can be standalone or inside vehicle/flow)
             route_definitions = {}  # {route_id: edge_list}
             
-            # 1. 解析独立的<route>定义
+            # 1. Parse standalone <route> definitions
             for route_tag in root.findall('route'):
                 route_id = route_tag.get('id')
                 edges_str = route_tag.get('edges', '')
@@ -653,20 +657,20 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
                     edges = edges_str.strip().split()
                     route_definitions[route_id] = edges
             
-            # 2. 解析<vehicle>和<flow>中的路径
+            # 2. Parse routes in <vehicle> and <flow>
             for element in root.findall('vehicle') + root.findall('flow'):
-                # 情况1: 使用route属性引用
+                # Case 1: referenced via route attribute
                 route_ref = element.get('route')
                 if route_ref and route_ref in route_definitions:
                     edges = route_definitions[route_ref]
                 else:
-                    # 情况2: 嵌套的<route>标签
+                    # Case 2: nested <route> tag
                     route_tag = element.find('route')
                     if route_tag is not None:
                         edges_str = route_tag.get('edges', '')
                         edges = edges_str.strip().split() if edges_str else []
                     else:
-                        # 情况3: from/to属性（需要SUMO计算路径，暂时跳过）
+                        # Case 3: from/to attributes (requires SUMO path computation, skip for now)
                         continue
                 
                 if len(edges) >= 2:
@@ -677,36 +681,36 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
                     if od_pair not in od_routes:
                         od_routes[od_pair] = []
                     
-                    # 避免重复路径
+                    # Avoid duplicate routes
                     if edges not in od_routes[od_pair]:
                         od_routes[od_pair].append(edges)
             
-            # 统计信息
+            # Statistics
             total_od_pairs = len(od_routes)
             total_routes = sum(len(routes) for routes in od_routes.values())
             od_with_multiple_routes = sum(1 for routes in od_routes.values() if len(routes) >= 2)
             
-            print(f"✓ 从rou.xml解析了 {total_od_pairs} 个OD对（用于连通性测试）")
+            print(f"✓ Parsed {total_od_pairs} OD pairs from rou.xml (for connectivity testing)")
             
             return od_routes
             
         except Exception as e:
-            print(f"⚠ 解析路径文件时出错: {e}")
+            print(f"⚠ Error parsing route file: {e}")
             import traceback
             traceback.print_exc()
             return {}
 
     def get_all_depart_edges_from_rou(self):
         """
-        从rou.xml文件解析所有车辆的起始边
+        Parse all departure edges from rou.xml file
         
         Returns:
-            set: 所有起始边的集合
+            set: set of all departure edges
         """
         route_file = self.get_route_file_path()
         
         if not route_file or not os.path.exists(route_file):
-            print(f"⚠ 路径文件不存在: {route_file}")
+            print(f"⚠ Route file does not exist: {route_file}")
             return set()
         
         depart_edges = set()
@@ -716,7 +720,7 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
             tree = ET.parse(route_file)
             root = tree.getroot()
             
-            # 1. 解析独立的<route>定义
+            # 1. Parse standalone <route> definitions
             route_definitions = {}
             for route_tag in root.findall('route'):
                 route_id = route_tag.get('id')
@@ -724,16 +728,16 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
                 if route_id and edges_str:
                     edges = edges_str.strip().split()
                     if edges:
-                        route_definitions[route_id] = edges[0]  # 只保存第一条边
+                        route_definitions[route_id] = edges[0]  # store only the first edge
             
-            # 2. 解析<vehicle>和<flow>
+            # 2. Parse <vehicle> and <flow>
             for element in root.findall('vehicle') + root.findall('flow'):
-                # 情况1: 使用route属性引用
+                # Case 1: referenced via route attribute
                 route_ref = element.get('route')
                 if route_ref and route_ref in route_definitions:
                     depart_edges.add(route_definitions[route_ref])
                 else:
-                    # 情况2: 嵌套的<route>标签
+                    # Case 2: nested <route> tag
                     route_tag = element.find('route')
                     if route_tag is not None:
                         edges_str = route_tag.get('edges', '')
@@ -741,31 +745,31 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
                         if edges:
                             depart_edges.add(edges[0])
                     else:
-                        # 情况3: from属性（起始边）
+                        # Case 3: from attribute (departure edge)
                         from_edge = element.get('from')
                         if from_edge:
                             depart_edges.add(from_edge)
         
-            print(f"📄 从rou.xml解析了 {len(depart_edges)} 个不同的起始边")
+            print(f"📄 Parsed {len(depart_edges)} unique departure edges from rou.xml")
             return depart_edges
             
         except Exception as e:
-            print(f"⚠ 解析起始边时出错: {e}")
+            print(f"⚠ Error parsing departure edges: {e}")
             return set()
     def get_closable_edges(self):
         """
-        基于连通性测试的可封闭边识别
+        Identify edges that can be closed based on connectivity testing
         
-        思想：
-        1. 对每个OD对，测试移除每条边后是否仍有路径
-        2. 如果移除后仍连通 → 可封闭
-        3. 如果移除后不连通 → 关键边（不可封闭）
+        Idea:
+        1. For each OD pair, test whether a path still exists after removing each edge
+        2. If still connected → edge is closable
+        3. If disconnected → edge is critical (not closable)
         """
         import sumolib
         import networkx as nx
         
-        # 1. 构建路网图
-        print("📊 构建路网拓扑图...")
+        # 1. Build road network graph
+        print("📊 Building road network topology...")
         net = sumolib.net.readNet(self.get_net_file_address())
         
         G = nx.DiGraph()
@@ -774,16 +778,16 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
             to_node = edge.getToNode().getID()
             G.add_edge(from_node, to_node, edge_id=edge.getID())
         
-        print(f"   节点数: {G.number_of_nodes()}, 边数: {G.number_of_edges()}")
+        print(f"   Nodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}")
         
-        # 2. 从rou.xml获取OD对
+        # 2. Get OD pairs from rou.xml
         od_routes = self.parse_od_routes_from_file()
         
         if not od_routes:
-            print("⚠ 无法解析OD路径")
+            print("⚠ Failed to parse OD routes")
             return []
         
-        # 转换为节点对（边 → 节点）
+        # Convert to node pairs (edge → node)
         od_node_pairs = set()
         for (origin_edge, dest_edge), routes in od_routes.items():
             try:
@@ -793,9 +797,9 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
             except:
                 pass
         
-        print(f"📊 分析 {len(od_node_pairs)} 个OD对的可摧毁边...")
+        print(f"📊 Analyzing {len(od_node_pairs)} OD pairs for destroyable edges...")
         
-        # 3. 测试每条边
+        # 3. Test each edge
         destroyable_edges = set()
         critical_edges = set()
         
@@ -814,16 +818,16 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
             
             is_critical = False
             
-            # 对每个OD对测试移除该边的影响
+            # Test impact of removing this edge for each OD pair
             for source, target in od_node_pairs:
-                # ✅ 核心逻辑：模拟摧毁
+                # ✅ Core logic: simulate removal
                 G_temp = G.copy()
                 if G_temp.has_edge(from_node, to_node):
                     G_temp.remove_edge(from_node, to_node)
                 
-                # ✅ 检查连通性
+                # ✅ Check connectivity
                 if not nx.has_path(G_temp, source, target):
-                    # 移除后不连通 → 这是关键边
+                    # Disconnected → critical edge
                     is_critical = True
                     critical_edges.add(edge_id)
                     break
@@ -831,13 +835,14 @@ class parse_sumo_config(): # 静态信息获取会影响并行仿真吗？
             if not is_critical:
                 destroyable_edges.add(edge_id)
         
-        # 4. 统计结果
-        print(f"\n✅ 分析完成:")
-        print(f"  - 总边数: {total_edges}")
-        print(f"  - 关键边（不可封闭）: {len(critical_edges)}")
-        print(f"  - 可摧毁边（可封闭）: {len(destroyable_edges)}")
+        # 4. Summary
+        print(f"\n✅ Analysis complete:")
+        print(f"  - Total edges: {total_edges}")
+        print(f"  - Critical edges (not closable): {len(critical_edges)}")
+        print(f"  - Closable edges: {len(destroyable_edges)}")
         
         return list(destroyable_edges)
+    
 # ===============================================================================================
 
 
@@ -848,9 +853,9 @@ class World(parse_sumo_config, gym.Env):
 
     def __init__(self, sumo_config, **kwargs):
         super().__init__(sumo_config, **kwargs)
-        # ✨ 新增：同步/异步决策模式控制
-        self.sync_mode = kwargs.get('sync_mode', False)  # 默认异步模式
-        # ✅ 添加这3行：获取奖励配置（用于MA2C等特殊算法）
+        # ✨ New: control for synchronous/asynchronous decision mode
+        self.sync_mode = kwargs.get('sync_mode', False)  # default is asynchronous mode
+        # ✅ Add these 3 lines: get reward configuration (used for special algorithms like MA2C)
         self._reward_weights = kwargs.get('reward_weights', [1.0])
         self._reward_scale = kwargs.get('reward_scale', 1.0)
         self._reward_clip_range = kwargs.get('reward_clip_range', None)
@@ -874,19 +879,19 @@ class World(parse_sumo_config, gym.Env):
         #     self.interface_flag = False
         # else:
         #     raise Exception('NOT IMPORTED YET')
-        # ============预先获取交通灯和相位信息（不需要启动SUMO）============
+        # ============Pre-fetch traffic lights and phase information (no need to start SUMO)============
         self.traffic_light_ids = self._get_traffic_light_ids()
         self.all_roads = self._get_roads()
         self.all_lanes = self._get_lanes()
         
-        # 关键改动：在 __init__ 中就生成 green_phases（只解析XML，不启动SUMO）
+        # Key change: generate green_phases in __init__ (parse XML only, no SUMO start)
         self.green_phases = self._generate_valid_phase()        
     
         # ==================world level dynamic statistics/ ==================
         self.num_arrived_vehicles = 0 # total number of vehicles that have arrived in the world
         self.num_departed_vehicles = 0 # total number of vehicles that have departed in the world   
         self.num_teleported_vehicles = 0 # total number of vehicles that have teleported in the world
-        # 分清楚哪些是世界层面的哪些是交叉口面的指标       
+       # Distinguish between world-level and intersection-level metrics       
         self.total_info_labels = [
             "time",
             "system_total_running_num",
@@ -898,19 +903,19 @@ class World(parse_sumo_config, gym.Env):
             "system_total_waiting_time",
             "system_mean_waiting_time",
             "system_mean_speed",
-            "pressure", # 获取每个路口的压强（入口车道车辆数减出口车道车辆数）（get_pressure 方法）
-            "phase",#获取每个路口当前的信号相位（get_cur_phase 方法）
-            "lane_count", # 获取每个车道的车辆数量（get_lane_vehicle_count 方法）。
-            "lane_vehicles", # 获取每个车道的车辆列表（get_lane_vehicles 方法）。
-            "lane_waiting_count", # 获取每个车道的等待车辆数量（get_lane_waiting_vehicle_count 方法）。
-            "lane_pressure", #获取每个入口车道的压强（入口车道车辆数减对应出口车道车辆数）（get_lane_pressure 方法）
-            "lane_waiting_time_count",#获取每个车道上所有等待车辆的总等待时间（get_lane_waiting_time_count 方法）
-            "lane_delay",#计算每个车道的平均延误（1-平均速度/限速）（get_lane_delay 方法）
-            "real_delay",#获取所有车辆的真实平均延误（get_real_delay 方法），基于车辆轨迹与理论期望时间的差值
-            "vehicle_trajectory",#获取所有车辆的轨迹（车道变换及对应时间）（get_vehicle_trajectory 方法)
+            "pressure", # get pressure at each intersection (incoming - outgoing vehicle count) (get_pressure method)
+            "phase", # get current signal phase at each intersection (get_cur_phase method)
+            "lane_count", # get vehicle count per lane (get_lane_vehicle_count method)
+            "lane_vehicles", # get list of vehicles per lane (get_lane_vehicles method)
+            "lane_waiting_count", # get number of waiting vehicles per lane (get_lane_waiting_vehicle_count method)
+            "lane_pressure", # get pressure per incoming lane (incoming - corresponding outgoing vehicles) (get_lane_pressure method)
+            "lane_waiting_time_count", # get total waiting time of all waiting vehicles per lane (get_lane_waiting_time_count method)
+            "lane_delay", # compute average delay per lane (1 - avg_speed / speed_limit) (get_lane_delay method)
+            "real_delay", # get real average delay for all vehicles (get_real_delay method), based on trajectory vs expected time
+            "vehicle_trajectory", # get trajectory of all vehicles (lane changes and timestamps) (get_vehicle_trajectory method)
             "vehicles_average_trip_time",
             "outgoing_lane_vehicles",
-        ] # 获取所有车辆的平均旅行时间（get_vehicles 方法），即所有已离开车辆的平均通过时间。
+        ] # get average trip time of all completed vehicles (get_vehicles method)
             
         self.fns_subscribed = []
         self.info_dynamics_real_time = {}
@@ -936,7 +941,7 @@ class World(parse_sumo_config, gym.Env):
         # self.traffic_light_ids = self._get_traffic_light_ids()
         # self.all_roads = self._get_roads()
         # self.all_lanes = self._get_lanes()
-        # 这些会在第一次reset时初始化
+        # These will be initialized during the first reset
         # self.green_phases = None
         self.id2intersection = None
         self.intersections = None
@@ -955,7 +960,7 @@ class World(parse_sumo_config, gym.Env):
         self.observations = {tl: None for tl in self.traffic_light_ids}
         self.rewards = {tl: None for tl in self.traffic_light_ids}
         
-        # 创建组合的动作空间
+        # Create combined action space (if needed later)
         # action_dims = [intersection._action_space.n for intersection in self.intersections]
         # self.action_space = gym.spaces.MultiDiscrete(action_dims)
         
@@ -1229,7 +1234,7 @@ class World(parse_sumo_config, gym.Env):
         :param: None
         :return avg_delay: average real delay of all vehicles
         '''
-        # 只在需要时才更新轨迹
+        # Only update trajectory when needed
         if 'vehicle_trajectory' not in self.fns_subscribed:
             self.vehicle_trajectory, self.vehicle_maxspeed = self.get_vehicle_trajectory()
         for v in self.vehicle_trajectory:
@@ -1257,14 +1262,14 @@ class World(parse_sumo_config, gym.Env):
         return avg_delay
     def get_outgoing_lane_vehicles(self):
         """
-        获取出口车道的车辆信息 (用于项目1的attention机制)
+        Get vehicle information on outgoing lanes (used for Project 1 attention mechanism)
         
         Returns:
             outgoing_vehicles: dict
                 {
                     'lane_id': {
                         'total_count': int,
-                        'near_junction_count': int,  # 距离路口终点100米以上的车辆
+                        'near_junction_count': int,  # vehicles more than 100m from junction end (upstream congestion)
                         'vehicles': [veh_id, ...]
                     },
                     ...
@@ -1272,7 +1277,7 @@ class World(parse_sumo_config, gym.Env):
         """
         outgoing_vehicles = {}
         
-        # 遍历所有交通灯的出口道路
+        # iterate through all traffic lights' outgoing roads
         for ts in self.intersections:
             for out_road in ts.out_roads:
                 lanes = ts.road_lane_mapping.get(out_road, [])
@@ -1284,13 +1289,13 @@ class World(parse_sumo_config, gym.Env):
                         
                         near_junction_count = 0
                         
-                        # 统计距离路口终点100米以上的车辆（靠近上游，拥堵区域）
+                        # count vehicles that are ≥100m from junction end (congestion region upstream)
                         for veh_id in vehicle_ids:
                             try:
                                 position = self.eng.vehicle.getLanePosition(veh_id)
                                 distance_to_end = lane_length - position
                                 
-                                # 项目1逻辑: 距离终点>=100米的车辆算拥堵
+                                # Project 1 logic: vehicles ≥100m from end are considered congested
                                 if distance_to_end >= 100:
                                     near_junction_count += 1
                             except:
@@ -1303,7 +1308,7 @@ class World(parse_sumo_config, gym.Env):
                         }
                     
                     except Exception as e:
-                        # 出错时返回空数据
+                        # return empty data if error occurs
                         outgoing_vehicles[lane_id] = {
                             'total_count': 0,
                             'near_junction_count': 0,
@@ -1363,7 +1368,6 @@ class World(parse_sumo_config, gym.Env):
             else:
                 raise Exception(f'Info function {fn} not implemented')
 
-
     # =====================================
     def step_sim_and_statistics(self): # actually is statistic first and then step sim
         """
@@ -1394,17 +1398,16 @@ class World(parse_sumo_config, gym.Env):
         self._update_infos() # step level dynamic information (world level, intersection level, vehicle level)
         # self.vehicle_trajectory, self.vehicle_maxspeed = self.get_vehicle_trajectory()
 
-
     def step_sim_until_time_to_act(self):
         time_to_act = False
         
         while not time_to_act:
             if self.step_counter >= self.sim_max_steps:
-                print(f"DEBUG: 达到 sim_max_steps={self.sim_max_steps}，强制退出循环")
+                print(f"DEBUG: Reached sim_max_steps={self.sim_max_steps}, force exiting loop")
                 break
             self.eng.simulationStep()            
             self.step_counter += 1
-            self.step_sim_and_statistics() # 累计奖励
+            self.step_sim_and_statistics() # accumulate rewards
             for i, intersection in enumerate(self.intersections): # check if there is a intersection that needs to act
                 
                 # self.intersection.update()
@@ -1413,14 +1416,14 @@ class World(parse_sumo_config, gym.Env):
                     # self.sumo.trafficlight.setPhase(self.id, self.green_phase)
                     self.eng.trafficlight.setRedYellowGreenState(intersection.id, intersection.all_phases[intersection.green_phase].state)
                     intersection.is_yellow = False                
-                # ✨ 根据模式判断是否需要决策
+                # ✨ Determine whether a decision is needed based on mode
                 if self.sync_mode:
-                    # 同步模式：检查所有智能体是否都到达决策时间
+                    # Synchronous mode: check if all agents are ready to act
                     if all(intsec.time_to_act for intsec in self.intersections):
                         time_to_act = True
                         break
                 else:
-                    # 异步模式：任意一个智能体需要决策即可
+                    # Asynchronous mode: any agent needing to act is sufficient
                     if intersection.time_to_act:
                         time_to_act = True
         
@@ -1447,22 +1450,22 @@ class World(parse_sumo_config, gym.Env):
         else:
             traci.start(self.sumo_cmd, label=self.connection_name)
             self.eng = traci.getConnection(self.connection_name)
-        # ==================首次运行时获取静态信息=================
+        # ==================Initialize static information on first run=================
         # if self.green_phases is None:
         # self.green_phases = self._generate_valid_phase()
         
         # ==================warmup simulation=================
-        # 执行若干步以确保环境稳定
+        # Run several steps to stabilize the environment
         for _ in range(300):
             self.eng.simulationStep()
         current_time = self.get_current_time()
         self.step_counter = int(current_time)
         print(f"DEBUG: Reset完成,当前step_counter = {self.step_counter}")
         
-        # =====================创建交叉口对象==================================
+        # =====================Create intersection objects==================================
         self.id2intersection = dict()
         self.intersections = []
-        # 从配置文件获取观测和奖励订阅配置
+        # Get observation and reward subscription configs from configuration
         obs_to_subscribe = self.get_obs_to_subscribe()
         reward_to_subscribe = self.get_reward_to_subscribe()
         for ts in self.eng.trafficlight.getIDList():
@@ -1475,10 +1478,10 @@ class World(parse_sumo_config, gym.Env):
             self.intersections.append(self.id2intersection[ts])
         self.id2idx = {i: idx for idx,i in enumerate(self.id2intersection)}
         
-        # ============首次运行获取in/out lanes=================
+        # ============Initialize in/out lanes on first run=================
         if self.in_lanes is None:
             self.in_lanes, self.out_lanes = self.get_in_out_lanes()
-        # =============创建动作空间=========================
+        # =============Create action space=========================
         if self.action_space is None:
             action_dims = [intersection._action_space.n for intersection in self.intersections]
             self.action_space = gym.spaces.MultiDiscrete(action_dims)
@@ -1487,7 +1490,7 @@ class World(parse_sumo_config, gym.Env):
             intsec.reset()
             intsec.next_action_time = current_time
             intsec.collect_objective_traffic_state(self.max_distance)
-            # 检查当前相位状态是否是黄灯
+            # Check if the current phase state is yellow
             phase_state = intsec.eng.trafficlight.getRedYellowGreenState(intsec.id)
             intsec.is_yellow = 'y' in phase_state
             if not intsec.is_yellow:
@@ -1496,11 +1499,11 @@ class World(parse_sumo_config, gym.Env):
                         idx for idx, green_phase_obj in enumerate(intsec.green_phases) 
                         if green_phase_obj.state == phase_state)
                     intsec.time_since_last_phase_change = intsec.min_green
-                except: # 如果找不到匹配的绿灯相位，报错，不使用默认相位
+                except: # If no matching green phase is found, raise error (do not fallback)
                     raise ValueError(f"Surprise: phase state of {intsec.id} : '{phase_state}' is not found in green phases")
             else:
                 intsec.time_since_last_phase_change = intsec.yellow_phase_time
-        # 初始化变量不进行step level的统计
+        # Initialize variables without performing step-level statistics
         self._update_infos()
         # TODO: check if its the problem
         
@@ -1512,51 +1515,51 @@ class World(parse_sumo_config, gym.Env):
         return self._get_observations()
     
     def _get_observations(self):
-        """获取当前需要决策的agents的观测"""
+        """Get observations for agents that need to act"""
         if self.sync_mode:
-            # ✨ 同步模式：返回所有智能体的观测
+            # ✨ Synchronous mode: return observations for all agents
             observations = {
                 tl: self.id2intersection[tl].get_observation()
                 for tl in self.traffic_light_ids
             }
-        else: # 异步模式：只返回当前需要决策的智能体
-            # 获取当前需要决策的agents
+        else: # Asynchronous mode: only return agents that need to act
+            # Get agents that need to act
             acting_agents = [
                 tl for tl in self.traffic_light_ids 
                 if self.id2intersection[tl].time_to_act
             ]
-            # 只为当前需要决策的agents计算和返回观测
+            # Only compute and return observations for these agents
             observations = {
                 tl: self.id2intersection[tl].get_observation()
                 for tl in acting_agents
             }
         
-        # 更新缓存（可选）
+        # Update cache (optional)
         self.observations.update(observations)
         
         return observations
     
     def _get_rewards(self):
-        """获取当前需要决策的agents的奖励"""
+        """Get rewards for agents that need to act"""
         if self.sync_mode:
-            # ✨ 同步模式：返回所有智能体的奖励
+            # ✨ Synchronous mode: return rewards for all agents
             rewards = {
                 tl: self.id2intersection[tl].get_reward()
                 for tl in self.traffic_light_ids
             }
-        else: # 异步模式：只返回当前需要决策的智能体
-            # 获取当前需要决策的agents（与observations保持一致）
+        else: # Asynchronous mode: only return agents that need to act
+            # Get agents that need to act (consistent with observations)
             acting_agents = [
                 tl for tl in self.traffic_light_ids 
                 if self.id2intersection[tl].time_to_act
             ]
-            # 只为当前需要决策的agents计算和返回奖励
+            # Only compute and return rewards for these agents
             rewards = {
                 tl: self.id2intersection[tl].get_reward()
                 for tl in acting_agents
             }
         
-        # 更新缓存（可选）
+        # Update cache (optional)
         self.rewards.update(rewards)
         
         return rewards
@@ -1569,38 +1572,37 @@ class World(parse_sumo_config, gym.Env):
         :param actions: actions list to be executed at all intersections at the next step
         :return: None
         '''
-        # ========记录执行action的agents（关键！）=========
-        # 这些agents执行了action，RLlib期望收到它们的reward和next_obs
+        # ========Record agents that executed actions (important!)=========
+        # These agents acted, RLlib expects their reward and next_obs
         agents_that_acted = list(actions.keys())
         
-        # ========为这些agents执行action===================
+        # ========Execute actions for these agents===================
         for tl, action in actions.items():
             if self.id2intersection[tl].time_to_act:
                 actual_action=self.id2intersection[tl].pseudo_step(action)
                 actions[tl] = actual_action
-        # ========仿真直到有agents需要决策================
+        # ========Simulate until new agents need to act================
         self.step_sim_until_time_to_act()
-        # 初始化观测和奖励字典
+        # Initialize observation and reward dictionaries
         observations = {}
         rewards = {}
-        # 检查是否有新的agents需要决策（用于下一次step）
-        # 这些agents将在下一次step中执行action
+        # Check if new agents need to act (for next step)
         newly_acting_agents = [
             tl for tl in self.traffic_light_ids 
             if self.id2intersection[tl].time_to_act
         ]
         
-        # 如果有新的agents需要决策，也为它们提供观测（但不需要reward，因为它们还没执行action）
+        # Provide observations (and rewards) for new agents
         for tl in newly_acting_agents:
             observations[tl] = self.id2intersection[tl].get_observation()
             rewards[tl] =  self.id2intersection[tl].get_reward()
-        # dones: 刚执行过action的agents还没done，新需要决策的agents也没done
+        # dones: no agent is done yet
         all_agents = set(agents_that_acted) | set(newly_acting_agents)
         dones = {tl: False for tl in all_agents}
         dones["__all__"] = self.step_counter >= self.sim_max_steps
-        # 🔑 添加调试信息
+        # 🔑 Debug info
         if dones["__all__"]:
-            # 统计每个agent的实际决策次数
+            # Count decisions per agent
             decision_counts = {tl: self.id2intersection[tl].action_count for tl in self.traffic_light_ids}
             
             total_decisions = sum(decision_counts.values())
@@ -1608,19 +1610,19 @@ class World(parse_sumo_config, gym.Env):
             theoretical_decisions = len(self.traffic_light_ids) * ((self.step_counter-300)//5) # decision_interval
             
             if self.sync_mode:
-                # 同步模式统计
+                # Synchronous mode stats
                 theoretical_decisions = (self.step_counter - 300) // 5
-                print(f"   模式: 同步")
-                print(f"   每个agent决策次数: {avg_decisions:.0f}")
-                print(f"   理论决策次数: {theoretical_decisions}")
+                print(f"   Mode: synchronous")
+                print(f"   Decisions per agent: {avg_decisions:.0f}")
+                print(f"   Theoretical decisions: {theoretical_decisions}")
             else:
-                # 异步模式统计
+                # Asynchronous mode stats
                 theoretical_decisions_total = len(self.traffic_light_ids) * ((self.step_counter - 300) // 5)
-                print(f"   模式: 异步")
-                print(f"   实际决策总数: {total_decisions}")
-                print(f"   理论决策总数: {theoretical_decisions_total}")
-                print(f"   每个agent平均: {avg_decisions:.1f} 次")
-            # ========== ✅ 添加SUMO统计指标 ==========
+                print(f"   Mode: asynchronous")
+                print(f"   Total actual decisions: {total_decisions}")
+                print(f"   Total theoretical decisions: {theoretical_decisions_total}")
+                print(f"   Average per agent: {avg_decisions:.1f}")
+            # ========== ✅ Add SUMO statistics ==========
 
         # info
 
@@ -1679,7 +1681,7 @@ class World(parse_sumo_config, gym.Env):
         return observations, rewards, dones, info
 
     def close(self):
-        # 在仿真结束时打印最终统计信息
+        # Print final statistics when the simulation ends
         
         if self.interface_flag:
             try:
@@ -1695,38 +1697,38 @@ class World(parse_sumo_config, gym.Env):
     
     def set_traffic_scale(self, scale: float):
         """
-        设置流量缩放因子
+        Set the traffic flow scaling factor
         
-        ⚠️ 注意：必须在 reset() 之前调用才能生效
-        因为 SUMO 需要在启动时应用该参数
+        ⚠️ Note: must be called before reset() to take effect
+        because SUMO needs to apply this parameter at startup
         
         Args:
-            scale: 流量缩放因子
-                   - 1.0: 正常流量（默认）
-                   - 0.5: 减半流量
-                   - 2.0: 加倍流量
+            scale: traffic scaling factor
+                   - 1.0: normal flow (default)
+                   - 0.5: half flow
+                   - 2.0: double flow
         
         Example:
-            >>> env.set_traffic_scale(1.5)  # 增加50%流量
-            >>> obs = env.reset()  # 新的流量设置会在这次reset时生效
+            >>> env.set_traffic_scale(1.5)  # increase traffic by 50%
+            >>> obs = env.reset()  # new traffic setting takes effect on this reset
         """
         if scale <= 0:
-            raise ValueError(f"流量缩放因子必须大于0，当前值: {scale}")
+            raise ValueError(f"Traffic scaling factor must be greater than 0, current value: {scale}")
         
         self.traffic_scale = scale
-        # 重新生成 SUMO 命令（包含新的 scale 参数）
+        # Regenerate SUMO command (including new scale parameter)
         self.sumo_cmd = self.generate_sumo_cmd()
         
-        print(f"✅ 已设置流量缩放因子: {scale} (将在下次 reset 时生效)")
+        print(f"✅ Traffic scaling factor set to: {scale} (will take effect on next reset)")
     
     def get_traffic_scale(self):
-        """获取当前的流量缩放因子"""
+        """Get the current traffic scaling factor"""
         return self.traffic_scale
         
     def observation_spaces(self, ts_id: str):
         """
         Return the observation space of a traffic signal (static method).
-        使用预解析的静态信息，无需实例化 Intersection 或调用 reset()
+        Uses pre-parsed static information, no need to instantiate Intersection or call reset()
         """
         if not hasattr(self, 'traffic_light_info'):
             raise RuntimeError(
@@ -1734,10 +1736,10 @@ class World(parse_sumo_config, gym.Env):
                 "This should be set in parse_sumo_config.__init__()"
             )
         
-        # ✅ 从配置中获取 obs_to_subscribe
+        # ✅ Get obs_to_subscribe from config
         obs_to_subscribe = self.get_obs_to_subscribe()
         
-        # ✅ 判断是否使用 presslight（强制 in_only=False）
+        # ✅ Check whether to use presslight (forces in_only=False)
         use_presslight = 'presslight' in obs_to_subscribe
         in_only = False if use_presslight else True
         return self.get_observation_space_static(ts_id, obs_to_subscribe, in_only=in_only)
@@ -1750,70 +1752,70 @@ class World(parse_sumo_config, gym.Env):
         if ts_id not in self.green_phases:
             raise ValueError(f"Traffic light '{ts_id}' not found.")
         
-        # 动作空间 = 绿灯相位的数量
+        # Action space = number of green phases
         num_actions = len(self.green_phases[ts_id])
         return gym.spaces.Discrete(num_actions)
-    # ==============================================封闭道路==============================
+    # ==============================================Road Closure==============================
     def close_edges(self, edge_ids, skip_validation=False):
         """
-        封闭指定的边
+        Close specified edges
         
         Args:
-            edge_ids: 要封闭的边ID列表
-            skip_validation: 跳过验证直接封闭
+            edge_ids: list of edge IDs to close
+            skip_validation: skip validation and close directly
         """
         if not edge_ids:
             return
 
         if skip_validation:
-            print("⚠ 跳过验证，直接封闭道路")
+            print("⚠ Skipping validation, closing roads directly")
             valid_edges = edge_ids
         else:
-            # 使用连通性测试验证
-            print("🔍 使用连通性测试验证可封闭边...")
+            # Validate using connectivity test
+            print("🔍 Validating closable edges using connectivity test...")
             closable_edges_set = set(self.get_closable_edges())
             valid_edges = [e for e in edge_ids if e in closable_edges_set]
             invalid_edges = [e for e in edge_ids if e not in closable_edges_set]
             
             if invalid_edges:
-                print(f"\n⚠ 警告：{len(invalid_edges)} 条道路不满足封闭条件（是某些OD对的必经之路）:")
+                print(f"\n⚠ Warning: {len(invalid_edges)} edges do not satisfy closure conditions (they are required paths for some OD pairs):")
                 for edge_id in invalid_edges:
                     print(f"   {edge_id}")
         
         if not valid_edges:
-            print("\n❌ 没有符合条件的道路可以封闭")
+            print("\n❌ No valid edges can be closed")
             return
         
-        # ✅ 新增：从rou.xml解析并排除所有车辆的起始边
+        # ✅ New: parse and exclude all vehicle departure edges from rou.xml
         try:
-            # 从rou.xml文件获取所有起始边
+            # Get all departure edges from rou.xml
             depart_edges = self.get_all_depart_edges_from_rou()
             
-            # 过滤掉起始边
+            # Filter out departure edges
             edges_before_filter = len(valid_edges)
             valid_edges = [e for e in valid_edges if e not in depart_edges]
             
             if edges_before_filter > len(valid_edges):
                 excluded_count = edges_before_filter - len(valid_edges)
-                print(f"\n⚠ 排除了 {excluded_count} 条道路（是车辆起始边）")
+                print(f"\n⚠ Excluded {excluded_count} edges (vehicle departure edges)")
                 excluded_edges = [e for e in edge_ids if e in depart_edges]
-                for edge in excluded_edges[:5]:  # 只显示前5个
+                for edge in excluded_edges[:5]:  # show only first 5
                     print(f"   - {edge}")
                 if len(excluded_edges) > 5:
-                    print(f"   ... 以及其他 {len(excluded_edges)-5} 条边")
+                    print(f"   ... and {len(excluded_edges)-5} more edges")
             
             if not valid_edges:
-                print("\n❌ 所有道路都是车辆起始边，无法封闭")
+                print("\n❌ All edges are vehicle departure edges, cannot close any")
                 return
                 
         except Exception as e:
-            print(f"⚠ 排除起始边时出错: {e}")
+            print(f"⚠ Error while excluding departure edges: {e}")
 
 
-        # 2. 找出受影响的车辆（包括已上路和待出发）
+        # 2. Identify affected vehicles (both running and pending)
         affected_vehicles = set()
         try:
-            # 2.1 已上路的车辆
+            # 2.1 Vehicles already on the network
             all_vehicles = self.eng.vehicle.getIDList()
             for veh_id in all_vehicles:
                 try:
@@ -1823,31 +1825,31 @@ class World(parse_sumo_config, gym.Env):
                 except Exception as e:
                     pass
             
-            print(f"\n📊 已上路：找到 {len(affected_vehicles)}/{len(all_vehicles)} 辆车的路线包含将要封闭的道路")
+            print(f"\n📊 On-road vehicles: found {len(affected_vehicles)}/{len(all_vehicles)} vehicles whose routes include edges to be closed")
             
         except Exception as e:
-            print(f"⚠ 查找受影响车辆时出错: {e}")
+            print(f"⚠ Error finding affected vehicles: {e}")
         
-        # 3. 使用 setDisallowed 封闭道路
+        # 3. Close edges using setEffort (logical closure)
         closed_count = 0
         for edge_id in valid_edges:
             try:
                 # self.eng.edge.setDisallowed(edge_id, ["all"])
                 # print(f"✓ 道路 {edge_id} 已封闭")
-                # ✅ 设置极高的通行代价，而不是物理禁止
+                # Instead of physically blocking, assign extremely high cost
                 self.eng.edge.setEffort(edge_id, float('inf'))
                 
-                # 可选：同时设置 traveltime 为极大值（某些路由算法会用到）
+                # Optional: also set travel time very high (used by some routing algorithms)
                 self.eng.edge.adaptTraveltime(edge_id, float('inf'))
                 
-                print(f"✓ 道路 {edge_id} 已设置为极高代价（逻辑封闭）")
+                print(f"✓ Edge {edge_id} set to extremely high cost (logically closed)")
                 closed_count += 1
             except Exception as e:
-                print(f"✗ 无法封闭道路 {edge_id}: {e}")
+                print(f"✗ Failed to close edge {edge_id}: {e}")
         
-        print(f"\n🚧 总共成功封闭了 {closed_count}/{len(valid_edges)} 条道路")
+        print(f"\n🚧 Successfully closed {closed_count}/{len(valid_edges)} edges")
         
-        # 4. 让受影响的车辆重新计算路线
+        # 4. Reroute affected vehicles
         if affected_vehicles:
             rerouted_count = 0
             failed_count = 0
@@ -1855,16 +1857,16 @@ class World(parse_sumo_config, gym.Env):
             for veh_id in affected_vehicles:
                 try:
                     # self.eng.vehicle.reroute(veh_id)
-                    # 使用 rerouteTraveltime 以考虑 effort 值
+                    # Use rerouteTraveltime to consider effort values
                     self.eng.vehicle.rerouteTraveltime(veh_id)
                     rerouted_count += 1
                 except Exception as e:
                     failed_count += 1
-            print(f"✓ 成功为 {rerouted_count} 辆受影响车辆重新规划路线")
+            print(f"✓ Successfully rerouted {rerouted_count} affected vehicles")
             if failed_count > 0:
-                print(f"⚠ {failed_count} 辆车重新规划时遇到问题（但不会卡住，会使用原路线）")
+                print(f"⚠ {failed_count} vehicles encountered issues during rerouting (will continue using original route)")
         else:
-            print(f"✓ 当前无车辆受影响")
+            print(f"✓ No vehicles currently affected")
 
 class Intersection():
     '''
@@ -1881,20 +1883,20 @@ class Intersection():
 
         
         self.green_phase=0
-        self.decision_interval=world.get_decision_interval() # 决策间隔从配置文件中读取
+        self.decision_interval=world.get_decision_interval() # decision interval read from config
         # links and phase information of certain intersection
         # self.current_phase = 0
-        self.steps_since_action = 0  # ✅ 添加：追踪自上次决策以来的步数
+        self.steps_since_action = 0  # track number of steps since last decision
         self.time_since_last_phase_change = 0
         self.is_yellow = False
         self.next_action_time = 300 # warmup time
         # self.yellow_phase_time = min([i.duration for i in self.eng.trafficlight.getAllProgramLogics(self.id)[0].phases])
         self.yellow_phase_time = world.get_yellow_length()
         self.min_green = world.get_min_green()
-        self.action_count = 0  # 🔑 跟踪实际决策次数
+        self.action_count = 0  # track actual number of decisions
 
 
-        # 🔑 从预解析的静态信息中获取（已在 parse_sumo_config.__init__ 中完成）
+        # Get static information from pre-parsed data (completed in parse_sumo_config.__init__)
         # if hasattr(world, 'traffic_light_info') and id in world.traffic_light_info:
         # 使用静态预解析的数据
         # 🔑 从预解析的静态信息中获取（必须存在）
@@ -2035,7 +2037,7 @@ class Intersection():
         # self.waiting_times = dict()
         self.full_observation = None
         self.last_step_vehicles = None
-        self.action_count = 0  # 🔑 重置决策计数
+        self.action_count = 0  # reset decision counter
         # 🔧 新增：重置车道等待时间跟踪
         self.lane_vehicle_waiting_times = {}
         # self.current_phase = self.get_current_phase()
@@ -2076,12 +2078,12 @@ class Intersection():
         :param action: the changes to take
         :return: None
         '''
-        self.action_count += 1  # 🔑 每次决策时计数
+        self.action_count += 1  # track number of decisions
         # 执行action后重置累积器
         self.accumulated_reward_since_last_action = 0
-        self.steps_since_action = 0  # ✅ 添加：重置步数
+        self.steps_since_action = 0  # reset step counter
         
-        if self.is_yellow and self.time_since_last_phase_change == self.yellow_phase_time: #接管预热阶段黄灯相位
+        if self.is_yellow and self.time_since_last_phase_change == self.yellow_phase_time: # yellow phase takeover transition
             self.eng.trafficlight.setRedYellowGreenState(self.id, self.all_phases[action].state)
             self.next_action_time = self.world_current_time() + self.decision_interval
             self.is_yellow = False
@@ -2098,9 +2100,9 @@ class Intersection():
         elif self.green_phase != action:
             self.eng.trafficlight.setRedYellowGreenState(self.id,self.all_phases[self.yellow_dict[(self.green_phase, action)]].state)
             self.green_phase = action
-            # ✅ 根据模式设置下次决策时间
+            # set next decision time depending on mode
             if self.world.sync_mode:
-                # 同步模式：只加决策间隔（忽略黄灯时间）
+                # synchronous mode: only add decision interval (ignore yellow duration)
                 self.next_action_time = self.world_current_time() + self.decision_interval
             else:
                 self.next_action_time = self.world_current_time() + self.yellow_phase_time + self.decision_interval
@@ -2128,7 +2130,7 @@ class Intersection():
             lane_measures['lane_count'] = self.eng.lane.getLastStepVehicleNumber(lane)
         
             lane_vehicles = self._get_vehicles(lane, max_distance)
-            # 🔧 初始化当前车道的等待时间字典
+            # initialize waiting time dictionary for this lane
             if lane not in self.lane_vehicle_waiting_times:
                 self.lane_vehicle_waiting_times[lane] = {}
             # 记录当前车道上的车辆ID，用于清理已离开的车辆
@@ -2140,15 +2142,15 @@ class Intersection():
                 v_measures['speed'] = self.eng.vehicle.getSpeed(v)
                 v_measures['position'] = self.eng.vehicle.getLanePosition(v)
 
-                # 🔧 修正1: 基于当前速度判断是否正在等待（而非累积的waiting time）
+                # determine whether vehicle is waiting based on speed threshold
                 is_waiting = v_measures['speed'] < 0.1  # 速度阈值 0.1 m/s
                 
-                # 🔧 修正2: 维护当前车道上每辆车的等待时间
+                # maintain per-vehicle waiting time per lane
                 if v not in self.lane_vehicle_waiting_times[lane]:
                     self.lane_vehicle_waiting_times[lane][v] = 0.0
                 
                 if is_waiting:
-                    # 车辆正在等待，累加等待时间
+                    # accumulate waiting time if vehicle is stopped
                     self.lane_vehicle_waiting_times[lane][v] += step_length
                     # lane_measures['lane_waiting_count'] += 1  # 🔧 当前排队车辆数
                 else:
@@ -2162,7 +2164,7 @@ class Intersection():
                 # 统计车道总车辆数
                 # lane_measures['lane_count'] += 1
                 vehicles.append(v_measures)
-            # 🔧 清理已离开当前车道的车辆
+            # remove vehicles that left the lane
             vehicles_to_remove = set(self.lane_vehicle_waiting_times[lane].keys()) - current_lane_vehicles_set
             for v in vehicles_to_remove:
                 del self.lane_vehicle_waiting_times[lane][v]
@@ -2204,11 +2206,11 @@ class Intersection():
         #             detectable.append(v)
         # return detectable
         '''
-        优化版：直接使用车道位置信息筛选车辆
-        
+        Get vehicles within detection range on a given lane.
+
         :param lane: lane id
-        :param max_distance: 检测距离范围
-        :return detectable: 在检测范围内的车辆列表
+        :param max_distance: detection range limit
+        :return detectable: list of vehicles within range
         '''
         detectable = []
         
@@ -2227,7 +2229,8 @@ class Intersection():
         return detectable
 
 # ========================================================================
-# TODO: reward compute, 动作空间，观测空间放哪（也在intersection层）？如何做通用多智能体环境？奖励计算还是归结到intersection层
+# TODO: reward computation, action space, observation space design
+# multi-agent environment design question: should reward belong to intersection level?
 # =========obeservation, reward and done compute=============================================
     def get_observation(self):
         return self.Observations.compute_observation()
@@ -2243,7 +2246,7 @@ class Intersection():
         #         self.last_reward = np.dot(self.last_reward, self.reward_weights)  # Linear combination of rewards
         # ==============================================================================
     def get_reward(self):
-        """返回自上次action以来的平均奖励"""
+        """Return average reward since last action."""
         if self.steps_since_action > 0:
             avg_reward = self.accumulated_reward_since_last_action / self.steps_since_action
         else:
@@ -2251,7 +2254,7 @@ class Intersection():
         return avg_reward  # ✅ 返回平均值，不重置（在pseudo_step中重置）
 
     def accumulate_reward(self):
-        """在每个仿真步调用，累积瞬时奖励"""
+        """Accumulate instantaneous reward at each simulation step."""
         instant_reward = self.Rewards.compute_reward()
         self.accumulated_reward_since_last_action += instant_reward
         self.steps_since_action += 1  # ✅ 添加：累加步数
