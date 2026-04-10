@@ -35,7 +35,7 @@ class FixedTimePolicy:
     This guarantees phase changes over time.
     """
 
-    def __init__(self, switch_every=10):
+    def __init__(self, switch_every=10): # TODO: this is a hyperparameter, so make it clear it is one
         self.switch_every = switch_every
         self.counters = {}
 
@@ -184,6 +184,12 @@ def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False)
         env = PARLSumoEnv(env_config)
         policy = FixedTimePolicy()
 
+        print("\n================ BASELINE CONFIG ================")
+        print(f"Policy type        : FixedTimePolicy")
+        print(f"Switch interval    : {args.switch_every} decision steps")
+        print("Rule               : alternate phase 0/1 every interval")
+        print("=================================================\n")
+
         print(f"\nEpisode {ep+1}/{num_episodes}")
 
         result = run_episode(env, policy)
@@ -208,6 +214,32 @@ def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False)
     print("Avg reward:", mean("avg_reward"))
     print("Ambulance time:", mean("ambulance_duration"))
     print("Civilian time:", mean("civilian_avg_trip_time"))
+    
+    def _stats(key):
+        vals = [r[key] for r in all_results]
+        return float(np.mean(vals)), float(np.std(vals))
+
+    avg_rew_mean,  avg_rew_std   = _stats('avg_reward')
+    amb_mean,      amb_std       = _stats('ambulance_duration')
+    civ_mean,      civ_std       = _stats('civilian_avg_trip_time')
+    reg_mean_mean, reg_mean_std  = _stats('reg_waiting_mean')
+    reg_std_mean,  reg_std_std   = _stats('reg_waiting_std')
+    emg_mean_mean, emg_mean_std  = _stats('emg_waiting_mean')
+    emg_std_mean,  emg_std_std   = _stats('emg_waiting_std')
+    steps_mean,    steps_std     = _stats('steps')
+    
+    print(f"\n{'='*80}")
+    print("Baseline Evaluation Summary")
+    print(f"  Baseline policy     : FixedTime (switch_every={args.switch_every})")
+    print(f"{'='*80}")
+    print(f"  Avg reward          : {avg_rew_mean:8.2f} +/- {avg_rew_std:.2f}")
+    print(f"  EMV trip time       : {amb_mean:8.2f}s +/- {amb_std:.2f}s")
+    print(f"  Civilian trip time  : {civ_mean:8.2f}s +/- {civ_std:.2f}s")
+    print(f"  Regular wait mean   : {reg_mean_mean:8.2f}s +/- {reg_mean_std:.2f}s")
+    print(f"  Regular wait std    : {reg_std_mean:8.2f}s +/- {reg_std_std:.2f}s  [fairness]")
+    print(f"  EMG wait mean       : {emg_mean_mean:8.2f}s +/- {emg_mean_std:.2f}s")
+    print(f"  Avg steps/episode   : {steps_mean:8.1f} +/- {steps_std:.1f}")
+    print(f"{'='*80}\n")
 
 
 # =========================================================
@@ -220,6 +252,13 @@ if __name__ == "__main__":
     parser.add_argument("--episodes", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--gui", action="store_true")
+    
+    parser.add_argument( # Parser for the cycle switch timings of the no RL model version
+    "--switch-every",
+    type=int,
+    default=10,
+    help="Number of decision steps before switching traffic phase"
+)
 
     args = parser.parse_args()
 
