@@ -1,9 +1,8 @@
 """
-Evaluation script for a no-RL baseline for Ambulance traffic control.
+No-RL Baseline Evaluation (correct RL-mirrored version)
 
-This mirrors the DQN/MAPPO evaluation scripts but uses a
-deterministic baseline policy (e.g., fixed timing or round-robin)
-instead of an RL agent.
+This version mirrors test_dqn_ambulance.py exactly,
+but replaces the neural policy with a deterministic rule.
 """
 
 import os
@@ -12,278 +11,222 @@ import json
 import numpy as np
 import argparse
 import yaml
-import torch
 
 # ---------------------------------------------------------
-# Force working directory to project root (two levels up)
+# Project root setup (same as RL script)
 # ---------------------------------------------------------
 current_file = os.path.abspath(__file__)
 project_root = os.path.abspath(os.path.join(os.path.dirname(current_file), '..', '..'))
-os.chdir(project_root)        # change Python working directory
+os.chdir(project_root)
 if project_root not in sys.path:
-    sys.path.insert(0, project_root)  # add root to Python path
+    sys.path.insert(0, project_root)
 
 print(f"Working directory set to: {os.getcwd()}")
 
 from src.core.parlenv import PARLSumoEnv
-from src.core.Rewards import GetRewards
-
-# ---------------------------------------------------------
-# Single episode runner
-# ---------------------------------------------------------
-
-class NoRLBaselineAgent:
-    """A simple baseline agent using fixed rules (no learning)."""
-    def __init__(self, act_dim):
-        self.act_dim = act_dim
-
-    def select_action(self, obs_dict):
-        # Example baseline: always choose action 0 for all agents
-        return {aid: 0 for aid in obs_dict.keys()}
 
 
-def run_test_episode(env, agent, verbose=False):
-    """Run one test episode; return metrics."""
+# =========================================================
+# Deterministic policy (REPLACES DQN)
+# =========================================================
+class FixedTimePolicy:
+    """
+    Simple round-robin switching per agent.
+    This guarantees phase changes over time.
+    """
+
+    def __init__(self, switch_every=10):
+        self.switch_every = switch_every
+        self.counters = {}
+
+    def act(self, obs_dict):
+        actions = {}
+
+        for aid in obs_dict.keys():
+            self.counters[aid] = self.counters.get(aid, 0) + 1
+
+            # alternate between phase 0 and 1
+            if (self.counters[aid] // self.switch_every) % 2 == 0:
+                actions[aid] = 0
+            else:
+                actions[aid] = 1
+
+        return actions
+
+
+# =========================================================
+# Episode runner (IDENTICAL structure to RL script)
+# =========================================================
+def run_episode(env, policy, verbose=False):
+
     obs = env.reset()
-    total_reward = {aid: 0 for aid in env.get_agent_ids()}
+    agent_ids = env.get_agent_ids()
+
+    total_reward = {aid: 0 for aid in agent_ids}
     steps = 0
 
-    # Accumulators for reward-component stats
     ep_reg_mean_sum = 0.0
-    ep_reg_std_sum  = 0.0
+    ep_reg_std_sum = 0.0
     ep_emg_mean_sum = 0.0
-    ep_emg_std_sum  = 0.0
+    ep_emg_std_sum = 0.0
     stat_steps = 0
 
     while True:
         steps += 1
 
-        action_dict = agent.select_action(obs)
+        # -----------------------------
+        # ACTION (ONLY DIFFERENCE FROM RL SCRIPT)
+        # -----------------------------
+        action_dict = policy.act(obs)
+
+        # CRITICAL: single env.step ONLY
         next_obs, reward_dict, done, info = env.step(action_dict)
 
         for aid, r in reward_dict.items():
             total_reward[aid] += r
 
-        # Collect waiting-time statistics from the first intersection
+        # -----------------------------
+        # stats (same as RL script)
+        # -----------------------------
         try:
-            world    = env.env
-            first_ts = world.id2intersection[list(obs.keys())[0]]
-            stats    = first_ts.Rewards.get_reward_statistics()
+            world = env.env
+            first = world.id2intersection[agent_ids[0]]
+            stats = first.Rewards.get_reward_statistics()
+
             ep_reg_mean_sum += stats['regular_vehicles']['mean_waiting']
-            ep_reg_std_sum  += stats['regular_vehicles']['std_waiting']
+            ep_reg_std_sum += stats['regular_vehicles']['std_waiting']
             ep_emg_mean_sum += stats['emergency_vehicles']['mean_waiting']
-            ep_emg_std_sum  += stats['emergency_vehicles']['std_waiting']
+            ep_emg_std_sum += stats['emergency_vehicles']['std_waiting']
             stat_steps += 1
+
         except Exception:
             pass
 
-        if verbose and steps % 50 == 0:
-            avg_r = np.mean([total_reward[aid] for aid in total_reward])
-            print(f"    Step {steps:4d}: avg_reward={avg_r:.2f}")
-
         obs = next_obs
+
         if done:
             break
 
-    # Episode-level averages
+    # -----------------------------
+    # episode summary
+    # -----------------------------
     reward_stats = {
         'reg_waiting_mean': ep_reg_mean_sum / stat_steps if stat_steps else 0.0,
-        'reg_waiting_std':  ep_reg_std_sum / stat_steps if stat_steps else 0.0,
+        'reg_waiting_std': ep_reg_std_sum / stat_steps if stat_steps else 0.0,
         'emg_waiting_mean': ep_emg_mean_sum / stat_steps if stat_steps else 0.0,
-        'emg_waiting_std':  ep_emg_std_sum / stat_steps if stat_steps else 0.0,
+        'emg_waiting_std': ep_emg_std_sum / stat_steps if stat_steps else 0.0,
     }
 
     world = env.env
-    ambulance_trip_times   = [t for vid, t in world.vehicles_trip_time.items()
-                               if vid.startswith("ambulance_")]
-    ambulance_duration     = float(np.mean(ambulance_trip_times)) if ambulance_trip_times else 0.0
-    civilian_trip_times    = [t for vid, t in world.vehicles_trip_time.items()
-                               if not vid.startswith("ambulance_")]
-    civilian_avg_trip_time = float(np.mean(civilian_trip_times)) if civilian_trip_times else 0.0
-    avg_reward             = float(np.mean([total_reward[aid] for aid in total_reward]))
+
+    ambulance_times = [
+        t for vid, t in world.vehicles_trip_time.items()
+        if vid.startswith("ambulance_")
+    ]
+    civilian_times = [
+        t for vid, t in world.vehicles_trip_time.items()
+        if not vid.startswith("ambulance_")
+    ]
 
     return {
-        'total_reward': total_reward,
-        'avg_reward': avg_reward,
-        'steps': steps,
-        'ambulance_duration': ambulance_duration,
-        'civilian_avg_trip_time': civilian_avg_trip_time,
-        **reward_stats,
+        "avg_reward": float(np.mean(list(total_reward.values()))),
+        "steps": steps,
+        "ambulance_duration": float(np.mean(ambulance_times)) if ambulance_times else 0.0,
+        "civilian_avg_trip_time": float(np.mean(civilian_times)) if civilian_times else 0.0,
+        **reward_stats
     }
 
 
-# ---------------------------------------------------------
-# Core test function
-# ---------------------------------------------------------
+# =========================================================
+# Main evaluation loop
+# =========================================================
+def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False):
 
-def test_baseline(
-    config_path,
-    scenario_dir,
-    num_episodes=10,
-    seed=42,
-    gui=True,
-    save_results=None,
-    verbose=False,
-):
-    """
-    Evaluate a no-RL baseline agent.
-    """
-    print("="*80)
-    print("No-RL Baseline Evaluation")
-    print("="*80)
-    print(f"Config file    : {config_path}")
-    print(f"Scenario dir   : {scenario_dir}")
-    print(f"Episodes       : {num_episodes}")
-    print(f"GUI            : {'on' if gui else 'off'}")
-    print("="*80 + "\n")
-
-    # ------------------------------------------------------------------
-    # Load YAML config
-    # ------------------------------------------------------------------
-    with open(config_path, 'r', encoding='utf-8') as f:
+    with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    # ------------------------------------------------------------------
-    # Build SUMO config
-    # ------------------------------------------------------------------
-    configs_dir = "tmp/test_no_rl_baseline_configs"
-    os.makedirs(configs_dir, exist_ok=True)
-
-    sumo_cfg = {
-        "name":             "test_no_rl_baseline",
-        "dir":              scenario_dir,
-        "roadnetFile":      "draft02.net.xml",
-        "flowFile":         "vtypes.rou.xml,draft02.rou.xml,ambulance.rou.xml",
-        "combined_file":    "draft02.sumocfg",
-        "gui":              True,
-        "no_warning":       True,
-        "decision_interval": 5,
-        "min_green":        5,
-        "yellow_length":    4,
-    }
-    sumo_config_path = os.path.join(configs_dir, 'test_sumo_config.json')
-    with open(sumo_config_path, 'w') as f:
-        json.dump(sumo_cfg, f, indent=2)
-
-    # ------------------------------------------------------------------
-    # Environment config
-    # ------------------------------------------------------------------
-    env_config = {
-        "sumo_config":           os.path.abspath(sumo_config_path),
-        "interface":             "traci",
-        "seed":                  seed,
-        "sync_mode":             True,
-        "obs_to_subscribe":      config['algorithm']['observation']['obs_to_subscribe'],
-        "reward_to_subscribe":   config['algorithm']['reward']['reward_to_subscribe'],
-        "algorithm_name":        "project1_std_dqn",
-        "normalize_observation": config['algorithm']['observation'].get('normalize', False),
-        "norm_params":           config['algorithm']['observation'].get('norm_params', {}),
-    }
-
-    # ------------------------------------------------------------------
-    # Probe env to get dimensions
-    # ------------------------------------------------------------------
-    print("Initialising environment to detect dimensions...")
-    probe_env  = PARLSumoEnv(env_config)
-    agent_ids  = probe_env.get_agent_ids()
-    act_dim    = probe_env.action_space(agent_ids[0]).n
-    probe_env.close()
-
-    # ------------------------------------------------------------------
-    # Build no-RL agent
-    # ------------------------------------------------------------------
-    agent = NoRLBaselineAgent(act_dim=act_dim)
-
-    # ------------------------------------------------------------------
-    # Run episodes
-    # ------------------------------------------------------------------
     all_results = []
-    for ep in range(num_episodes):
-        ep_seed = seed + ep
-        env_config["seed"] = ep_seed
-        env = PARLSumoEnv(env_config)
 
-        print(f"Episode {ep+1}/{num_episodes} (seed={ep_seed}) ... ", end='', flush=True)
-        result = run_test_episode(env, agent, verbose=verbose)
+    for ep in range(num_episodes):
+
+        env_config = {
+            "sumo_config": "scenarios/3_intersection_corridor_TR/3_intersection_corridor_TR.sumocfg",  # IMPORTANT: your PARL wrapper builds this internally
+            "interface": "traci",
+            "seed": seed + ep,
+            "sync_mode": True,
+            "obs_to_subscribe": config["algorithm"]["observation"]["obs_to_subscribe"],
+            "reward_to_subscribe": config["algorithm"]["reward"]["reward_to_subscribe"],
+            "algorithm_name": "project1_std_dqn",
+            "normalize_observation": config["algorithm"]["observation"].get("normalize", False),
+            "norm_params": config["algorithm"]["observation"].get("norm_params", {}),
+        }
+
+        sumo_cfg = {
+            "name": "baseline",
+            "dir": scenario_dir,
+            "roadnetFile": "3_intersection_corridor_TR.net.xml",
+            "flowFile": "3_intersection_corridor_TR.rou.xml",
+            "combined_file": "3_intersection_corridor_TR.sumocfg",
+            "gui": True, # TODO: HAVE TO CHANGE THIS VALUE TO CHANGE IF USE SUMO UI OR NOT, MAKE THIS WORK WITH A VAR.
+            "no_warning": True,
+            "decision_interval": 5,
+            "min_green": 5,
+            "yellow_length": 3,
+        }
+        
+        sumo_config_path = "tmp/baseline_config.json"
+        
+        with open(sumo_config_path, "w") as f:
+            json.dump(sumo_cfg, f)
+        
+        env_config["sumo_config"] = os.path.abspath(sumo_config_path)
+
+        env = PARLSumoEnv(env_config)
+        policy = FixedTimePolicy()
+
+        print(f"\nEpisode {ep+1}/{num_episodes}")
+
+        result = run_episode(env, policy)
         all_results.append(result)
 
-        print(f"reward={result['avg_reward']:7.2f} | "
-              f"EMV={result['ambulance_duration']:.1f}s | "
-              f"civilian={result['civilian_avg_trip_time']:.1f}s | "
-              f"reg_wait={result['reg_waiting_mean']:.1f}s"
-              f"(std={result['reg_waiting_std']:.1f}) | "
-              f"emg_wait={result['emg_waiting_mean']:.1f}s | "
-              f"steps={result['steps']}")
+        print(
+            f"reward={result['avg_reward']:.2f} | "
+            f"EMV={result['ambulance_duration']:.1f}s | "
+            f"civilian={result['civilian_avg_trip_time']:.1f}s | "
+            f"reg_wait={result['reg_waiting_mean']:.1f}s | "
+            f"emg_wait={result['emg_waiting_mean']:.1f}s | "
+            f"steps={result['steps']}"
+        )
 
         env.close()
 
-    # ------------------------------------------------------------------
-    # Aggregate statistics
-    # ------------------------------------------------------------------
-    def _stats(key):
-        vals = [r[key] for r in all_results]
-        return float(np.mean(vals)), float(np.std(vals))
+    # summary
+    def mean(key):
+        return np.mean([r[key] for r in all_results])
 
-    summary = {
-        'num_episodes': num_episodes,
-        'avg_reward_mean': _stats('avg_reward')[0],
-        'avg_reward_std':  _stats('avg_reward')[1],
-        'ambulance_time_mean': _stats('ambulance_duration')[0],
-        'ambulance_time_std':  _stats('ambulance_duration')[1],
-        'civilian_time_mean': _stats('civilian_avg_trip_time')[0],
-        'civilian_time_std':  _stats('civilian_avg_trip_time')[1],
-        'reg_waiting_mean_mean': _stats('reg_waiting_mean')[0],
-        'reg_waiting_mean_std':  _stats('reg_waiting_mean')[1],
-        'reg_waiting_std_mean': _stats('reg_waiting_std')[0],
-        'reg_waiting_std_std':  _stats('reg_waiting_std')[1],
-        'emg_waiting_mean_mean': _stats('emg_waiting_mean')[0],
-        'emg_waiting_mean_std':  _stats('emg_waiting_mean')[1],
-        'emg_waiting_std_mean': _stats('emg_waiting_std')[0],
-        'emg_waiting_std_std':  _stats('emg_waiting_std')[1],
-        'all_results': all_results,
-    }
-
-    if save_results:
-        save_dir = os.path.dirname(save_results)
-        if save_dir:
-            os.makedirs(save_dir, exist_ok=True)
-        with open(save_results, 'w') as f:
-            json.dump(summary, f, indent=2, default=str)
-        print(f"Results saved to: {save_results}\n")
-
-    return summary
+    print("\n===== SUMMARY =====")
+    print("Avg reward:", mean("avg_reward"))
+    print("Ambulance time:", mean("ambulance_duration"))
+    print("Civilian time:", mean("civilian_avg_trip_time"))
 
 
-# ---------------------------------------------------------
+# =========================================================
 # CLI
-# ---------------------------------------------------------
-
-def main():
-    parser = argparse.ArgumentParser(description='Evaluate no-RL baseline agent')
-    parser.add_argument('--config', type=str,
-                        default='configs/tsc/dqn_ambulance.yaml',
-                        help='YAML config file used for environment')
-    parser.add_argument('--scenario-dir', type=str,
-                        default='scenarios/emergency_vehicle',
-                        help='SUMO scenario directory')
-    parser.add_argument('--num-episodes', type=int, default=2)
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--gui', action='store_true')
-    parser.add_argument('--verbose', action='store_true')
-    parser.add_argument('--save-results', type=str, default=None)
+# =========================================================
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/tsc/dqn_ambulance.yaml")
+    parser.add_argument("--scenario-dir", default="scenarios/3_intersection_corridor_TR")
+    parser.add_argument("--episodes", type=int, default=2)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--gui", action="store_true")
 
     args = parser.parse_args()
 
     test_baseline(
-        config_path=args.config,
-        scenario_dir=args.scenario_dir,
-        num_episodes=args.num_episodes,
-        seed=args.seed,
-        gui=args.gui,
-        save_results=args.save_results,
-        verbose=args.verbose,
+        args.config,
+        args.scenario_dir,
+        args.episodes,
+        args.seed,
+        args.gui
     )
-
-
-if __name__ == '__main__':
-    main()
