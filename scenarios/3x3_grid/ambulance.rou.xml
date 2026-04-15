@@ -1,0 +1,18 @@
+<routes>
+    <vType id="ambulance_type" vClass="emergency" guiShape="emergency" speedDev="0" color="red">
+        <!-- <param key="has.bluelight.device" value="true"/> -->
+    </vType>
+
+    <!-- Ambulances depart every 100s with varied random routes across the network.
+         Entry/Exit edges (inc. - variant): E1101, E1202, E1303, E1314, E2324, E3334, E4333, E4232, E4131, E3031, E2021, E1011 -->
+    <trip id="ambulance_0"  type="ambulance_type" depart="100"  from="-E1101"  to="-E4131"  departPos="last"/>
+    <trip id="ambulance_1"  type="ambulance_type" depart="200"  from="E3031"   to="E3334"   departPos="last"/>
+    <trip id="ambulance_2"  type="ambulance_type" depart="300"  from="E4131"  to="E1303"   departPos="last"/>
+    <trip id="ambulance_3"  type="ambulance_type" depart="400"  from="-E2324"  to="E1101"   departPos="last"/>
+    <trip id="ambulance_4"  type="ambulance_type" depart="500"  from="-E1101"  to="E3334"   departPos="last"/>
+    <trip id="ambulance_5"  type="ambulance_type" depart="600"  from="-E1202"  to="-E4232"   departPos="last"/>
+    <trip id="ambulance_6"  type="ambulance_type" depart="700"  from="-E2324"  to="-E2021"   departPos="last"/>
+    <trip id="ambulance_7"  type="ambulance_type" depart="800"  from="E4333"  to="-E1011"  departPos="last"/>
+    <trip id="ambulance_8"  type="ambulance_type" depart="900"  from="-E1202"  to="E2324"   departPos="last"/>
+    <trip id="ambulance_9"  type="ambulance_type" depart="1000" from="-E1314"  to="-E4333"   departPos="last"/>
+</routes>
