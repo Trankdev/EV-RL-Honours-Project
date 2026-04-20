@@ -1,0 +1,99 @@
+    def get_reward_statistics(self) -> dict:
+        """
+        获取当前时刻的奖励统计信息（用于分析）
+    
+        Returns:
+            stats: dict
+                {
+                    'regular_vehicles': {
+                        'count': int,
+                        'mean_timeloss': float,
+                        'std_timeloss': float,
+                        'max_timeloss': float,
+                        'min_timeloss': float
+                    },
+                    'emergency_vehicles': {
+                        'count': int,
+                        'mean_timeloss': float,
+                        'std_timeloss': float,
+                        'max_timeloss': float,
+                        'min_timeloss': float
+                    },
+                    'reward_components': {
+                        'base': float,
+                        'regular_penalty': float,
+                        'emergency_penalty': float,
+                        'total_reward': float
+                    }
+                }
+        """
+        config = self.REWARD_CONFIGS.get('project1_std_reward', {})
+        K = config.get('K', 0.5)
+        Z = config.get('Z', 1.0)
+        base_reward = config.get('base_reward', 50.0)
+        ambulance_type_ids = config.get('ambulance_type_ids', ['ambulance_type', 'emergency'])
+    
+        # 收集 time loss
+        regular_timelosses = []
+        emergency_timelosses = []
+    
+        eng = self.world.eng
+    
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+    
+                    for veh_id in vehicle_ids:
+                        try:
+                            time_loss = eng.vehicle.getTimeLoss(veh_id)
+                            veh_type = eng.vehicle.getTypeID(veh_id)
+    
+                            if veh_type in ambulance_type_ids:
+                                emergency_timelosses.append(time_loss)
+                            else:
+                                regular_timelosses.append(time_loss)
+                        except:
+                            continue
+                except:
+                    continue
+    
+        # 计算统计信息
+        stats = {
+            'regular_vehicles': {
+                'count': len(regular_timelosses),
+                'mean_timeloss': float(np.mean(regular_timelosses)) if len(regular_timelosses) > 0 else 0.0,
+                'std_timeloss': float(np.std(regular_timelosses)) if len(regular_timelosses) > 0 else 0.0,
+                'max_timeloss': float(np.max(regular_timelosses)) if len(regular_timelosses) > 0 else 0.0,
+                'min_timeloss': float(np.min(regular_timelosses)) if len(regular_timelosses) > 0 else 0.0,
+            },
+            'emergency_vehicles': {
+                'count': len(emergency_timelosses),
+                'mean_timeloss': float(np.mean(emergency_timelosses)) if len(emergency_timelosses) > 0 else 0.0,
+                'std_timeloss': float(np.std(emergency_timelosses)) if len(emergency_timelosses) > 0 else 0.0,
+                'max_timeloss': float(np.max(emergency_timelosses)) if len(emergency_timelosses) > 0 else 0.0,
+                'min_timeloss': float(np.min(emergency_timelosses)) if len(emergency_timelosses) > 0 else 0.0,
+            }
+        }
+    
+        # 计算奖励组件
+        reg_mean = stats['regular_vehicles']['mean_timeloss']
+        reg_std = stats['regular_vehicles']['std_timeloss']
+        emg_mean = stats['emergency_vehicles']['mean_timeloss']
+        emg_std = stats['emergency_vehicles']['std_timeloss']
+        
+        ## NEED TO CHANGE THE REWARD EQ
+        regular_penalty = reg_mean + K * reg_std
+        emergency_penalty = Z * (emg_mean + K * emg_std)
+        total_reward = base_reward - regular_penalty - emergency_penalty
+    
+        stats['reward_components'] = {
+            'base': base_reward,
+            'regular_penalty': regular_penalty,
+            'emergency_penalty': emergency_penalty,
+            'total_reward': total_reward,
+            'K': K,
+            'Z': Z
+        }
+    
+        return stats
