@@ -1,4 +1,8 @@
     def get_reward_statistics(self) -> dict:
+# ... established connection to SUMO ...
+# https://sumo.dlr.de/docs/Simulation/Output/TripInfo.html
+## timeLoss	seconds	The time lost due to driving below the ideal speed. (ideal speed includes the individual speedFactor; slowdowns due to intersections etc. will incur timeLoss, scheduled stops do not count)
+
         """
         获取当前时刻的奖励统计信息（用于分析）
     
