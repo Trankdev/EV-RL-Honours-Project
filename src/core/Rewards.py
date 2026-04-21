@@ -19,67 +19,67 @@ from .Observations import ObservationFunction
 
 class GetRewards(ObservationFunction):
     """Default observation function for traffic signals."""
-    # ✅ 定义不同奖励类型的配置
+    # ================= Reward configuration definitions =================
     REWARD_CONFIGS = {
         'lane_waiting_count': {
-            'description': '车道等待车辆数',
-            'level': 'lane',  # ✅ 添加level
+            'description': 'Number of waiting vehicles per lane',
+            'level': 'lane',  # ✅ added level
             'use_difference': False,
             'negative': True,
             'scale': 1.0,
             'clip_range': None
         },
         'lane_waiting_time_count': {
-            'description': '车道等待时间总和',
-            'level': 'lane',  # ✅ 添加
+            'description': 'Total waiting time per lane',
+            'level': 'lane',  # ✅ added
             'use_difference': False,
             'negative': True,
             'scale': 1.0,
             'clip_range': None
         },
         'lane_vehicle_count': {
-            'description': '车道车辆总数',
+            'description': 'Total number of vehicles per lane',
             'use_difference': False,
             'negative': False,
             'scale': 1.0,
             'clip_range': None
         },
         'avg_waiting_time_per_vehicle': {
-            'description': '平均每车等待时间',
+            'description': 'Average waiting time per vehicle',
             'use_difference': False,
             'negative': True,
             'scale': 1.0,
             'clip_range': (-10.0, 0.0)
         },
-        # ✅ 新增：pressure（PressLight 使用）
+        # ================= Pressure (PressLight) =================
         'pressure': {
-            'description': '交叉口压力（入口-出口车辆数）',
-            'level': 'intersection',  # ✅ 标记为 intersection-level
-            'negative': True,  # 最小化压力
+            'description': 'Priority rewards for ambulances (civilian vehicles wait + ambulance penalty)',
+            'level': 'intersection',  # ✅ marked as intersection-level
+            'negative': True,  # minimize pressure
             'scale': 1.0,
         },
-        # ✅ 新增：救护车优先奖励
+        # ================= Emergency vehicle priority =================
         'emergency_vehicle_priority': {
             'description': 'Priority rewards for ambulances (civilian vehicles wait + ambulance penalty)',
             'level': 'intersection',
             'negative': True,
-            'civilian_weight': 0.7,      # 民用车权重
-            'ambulance_penalty': 5000,   # 救护车停车惩罚
-            'ambulance_speed_threshold': 1.0,  # 速度阈值(m/s)
-            'ambulance_type_id': 'ambulance_type',  # 救护车类型ID
+            'civilian_weight': 0.7,      # civilian vehicle weight
+            'ambulance_penalty': 5000,   # ambulance stopping penalty
+            'ambulance_speed_threshold': 1.0,  # speed threshold (m/s)
+            'ambulance_type_id': 'ambulance_type',  # ambulance type ID
             'scale': 1.0,
             'clip_range': None
         },
-        'project1_std_reward': {
+        'project1_std_reward': { # TODO: probably want to change this to new function or add new function
             'description': 'project1_std_reward: 50 - (reg_mean + K*reg_std + Z*(emg_mean + K*emg_std))',
             'level': 'intersection',
-            'negative': False,  # 奖励公式已包含负号逻辑
-            'K': 0.5,  # 标准差权重（可调参数）
-            'Z': 1.0,  # 应急车辆惩罚倍数（可调参数）
-            'base_reward': 50.0,  # 基础奖励值
+            'negative': False,  # reward formula already includes negative logic
+            'K': 0.5,  # standard deviation weight (tunable parameter)
+            'Z': 1.0,  # emergency vehicle penalty multiplier (tunable parameter)
+            'base_reward': 50.0,  # base reward value
             'scale': 1.0,
             'clip_range': None,
-            'ambulance_type_ids': ['ambulance_type', 'emergency']  # 应急车辆类型列表
+            'ambulance_type_ids': ['ambulance_type', 'emergency']  # emergency vehicle type list
         },
     }
     
@@ -99,36 +99,40 @@ class GetRewards(ObservationFunction):
                 tmp = sorted(self.ts.road_lane_mapping[r], key=lambda ob: int(ob[-1]))
             self.lanes_road_observed.append(tmp)
             # TODO: rank lanes by lane ranking [0,1,2], assume we only have one digit for ranking
+            
         # subscribe functions
-        # ✅ 特殊处理：emergency_vehicle_priority 需要订阅底层信息
+        # Special handling: emergency_vehicle_priority requires low-level data subscription
         if 'emergency_vehicle_priority' in reward_to_subscribe:
-            # 救护车奖励需要 lane_waiting_time_count
+            # ambulance reward requires lane_waiting_time_count
             self.world.subscribe(['lane_waiting_time_count'])
         else:
-            # 其他奖励类型直接订阅
+            # other reward types subscribe directly
             self.world.subscribe(reward_to_subscribe)
         # self.world.subscribe(reward_to_subscribe) # obs_to_subscribe have been obs_subscribed here
         self.fns_subscribed = reward_to_subscribe # a list
         self.negative = negative
-        # ✅ 新增：从world获取算法名称（用于特殊算法的奖励计算）
+        # Algorithm name (for special reward logic)
         self.algorithm_name = getattr(world, '_algorithm_name', 'default')
-        # 为每个奖励类型维护历史值（用于差分）
+        # Store previous rewards (for difference-based reward if needed)
         self.last_rewards = {fn: None for fn in self.fns_subscribed}
+        
     def _compute_emergency_priority_reward(self):
         """
-        计算救护车优先奖励
-        对齐原项目: reward = -1 × [(civilian_penalty × 0.7) + ambulance_penalty]
+        Compute emergency vehicle priority reward.
+
+        Aligned with original formulation:
+        reward = -1 × [(civilian_penalty × 0.7) + ambulance_penalty]
         """
         config = self.REWARD_CONFIGS['emergency_vehicle_priority']
         
-        # 1. 计算民用车等待时间惩罚
+        # 1. compute civilian waiting-time penalty
         waiting_time_result = self.world.info_dynamics_real_time.get('lane_waiting_time_count', {})
         civilian_penalty = 0
         for road_lanes in self.lanes_road_observed:
             for lane_id in road_lanes:
                 civilian_penalty += waiting_time_result.get(lane_id, 0)
         
-        # 2. 计算救护车惩罚
+        # 2. compute ambulance penalty
         ambulance_penalty = 0
         try:
             eng = self.world.eng
@@ -150,51 +154,57 @@ class GetRewards(ObservationFunction):
         except:
             pass
         
-        # 3. 组合奖励（对齐原项目公式）
+        # 3. combine reward (aligned with original project formula)
         civilian_weight = config['civilian_weight']
         raw_value = (civilian_penalty * civilian_weight) + ambulance_penalty
         
-        # 4. 取负值并缩放
+        # 4. take negative value and apply scaling
         reward = -raw_value / config.get('scale', 1.0)
         
         return float(reward)
+    
     def compute_reward(self) -> np.ndarray:
-        """计算奖励，支持多种奖励类型的不同处理策略"""
+        """Compute reward with multiple algorithm-specific modes."""
+        
+        # Project1 / std-DQN special case
         if 'project1' in self.algorithm_name.lower() or 'std_dqn' in self.algorithm_name.lower():
             return self._compute_project1_std_reward()
-        # 特殊处理 emergency_vehicle_priority
+        
+        # Emergency priority special case
         if 'emergency_vehicle_priority' in self.fns_subscribed:
             return self._compute_emergency_priority_reward()
+        
         subscribed_results = [self.world.info_dynamics_real_time[fn] for fn in self.fns_subscribed]
-        # ========== MA2C 特殊处理 ==========
+        
+        # ========== MA2C special handling ==========
         if 'ma2c' in self.algorithm_name.lower():
-            # ✅ 从world获取MA2C特定参数
+            # ✅ Get MA2C-specific parameters from world
             reward_weights = getattr(self.world, '_reward_weights', [1.0, 0.2])
             reward_scale = getattr(self.world, '_reward_scale', 2000.0)
             reward_clip_range = getattr(self.world, '_reward_clip_range', [-2.0, 2.0])
             
-            # 计算各个奖励分量
+            # compute each reward component
             reward_components = []
             for i, fn_name in enumerate(self.fns_subscribed):
                 result = subscribed_results[i]
                 
-                # 聚合lane级别数据（MA2C使用总和）
+                # aggregate lane-level data (MA2C uses sum)
                 fn_result = []
                 for road_lanes in self.lanes_road_observed:
                     road_result = [result[lane_id] for lane_id in road_lanes]
                     fn_result.extend(road_result)
                 raw_value = np.sum(fn_result)
                 
-                # 取负值（最小化）
+                # take negative value (minimization objective)
                 reward_components.append(-raw_value)
             
-            # ✅ 加权组合: reward = -queue - 0.2*wait
+            # ✅ weighted combination: reward = -queue - 0.2 * wait
             weighted_reward = sum(w * r for w, r in zip(reward_weights, reward_components))
             
-            # ✅ 归一化: reward /= 2000.0
+            # ✅ normalization: reward /= 2000.0
             normalized_reward = weighted_reward / reward_scale
             
-            # ✅ 裁剪: clip(reward, -2, 2)
+            # ✅ clipping: clip(reward, -2, 2)
             if reward_clip_range:
                 clipped_reward = np.clip(normalized_reward, 
                                         reward_clip_range[0], 
@@ -204,7 +214,7 @@ class GetRewards(ObservationFunction):
             
             return float(clipped_reward)
         
-        # ========== 默认模式：其他算法（保持原有逻辑）==========
+        # ================= Default mode =================
         else:
             reward_components = []
             
@@ -215,29 +225,29 @@ class GetRewards(ObservationFunction):
                 if fn_name == 'pressure':
                     raw_value = result[self.ts.id]
                 elif fn_name == 'lane_waiting_count':
-                    # ===================聚合lane级别的数据====================
-                    # lane_waiting_count 和 lane_waiting_time_count 都是lane级别数据
+                    # ===================aggregate lane-level data====================
+                    # lane_waiting_count and lane_waiting_time_count are both lane-level data
                     fn_result = []
                     for road_lanes in self.lanes_road_observed:
                         road_result = [result[lane_id] for lane_id in road_lanes]
                         fn_result.append(np.sum(road_result))
                     
-                    # 所有路段的平均值
+                    # average of all road segments
                     # raw_value = np.mean(fn_result)
-                    # ✅ 改为总和
+                    # ✅ changed to sum
                     raw_value = np.sum(fn_result)
-                # ✅ 新增：救护车优先奖励
+                # ✅ new: emergency vehicle priority reward
                 elif fn_name == 'emergency_vehicle_priority':
-                    # 1. 计算民用车等待时间（从 lane_waiting_time_count 获取）
+                    # 1. compute civilian vehicle waiting time (from lane_waiting_time_count)
                     waiting_time_result = self.world.info_dynamics_real_time.get('lane_waiting_time_count', {})
                     civilian_penalty = 0
                     for road_lanes in self.lanes_road_observed:
                         for lane_id in road_lanes:
                             civilian_penalty += waiting_time_result.get(lane_id, 0)
                     
-                    # 2. 计算救护车惩罚（检查所有车辆）
+                    # 2. compute ambulance penalty (check all vehicles)
                     ambulance_penalty = 0
-                    # 获取当前仿真中的所有车辆
+                    # get all vehicles in current simulation
                     eng = self.world.eng
                     vehicle_list = eng.vehicle.getIDList()
                     
@@ -252,16 +262,16 @@ class GetRewards(ObservationFunction):
                                 speed = eng.vehicle.getSpeed(veh_id)
                                 if speed < speed_threshold:
                                     ambulance_penalty += penalty_value
-                                    # print(f"⚠️ 救护车 {veh_id} 速度 {speed:.2f} m/s < {speed_threshold} m/s")
+                                    # print(f"⚠️ ambulance {veh_id} speed {speed:.2f} m/s < {speed_threshold} m/s")
                         except:
                             pass
-                    # 3. 组合奖励
+                    # 3. combine reward
                     civilian_weight = config['civilian_weight']
                     raw_value = (civilian_penalty * civilian_weight) + ambulance_penalty
                 else:
                     raise ValueError(f"Unknown reward level: {config['level']}")
                 
-                # 处理奖励：取负 -> 缩放 -> 裁剪
+                # process reward: negate -> scale -> clip
                 value = -raw_value if config['negative'] else raw_value
                 value = value / config['scale']
                 # if config['clip_range']:
@@ -272,24 +282,24 @@ class GetRewards(ObservationFunction):
 
     def _compute_project1_std_reward(self) -> float:
         """
-        计算项目1标准差感知奖励
-        
-        奖励公式 (对齐项目1 Agent.ipynb):
-            reward = 50 - ((reg_mean + K*reg_std) + Z*(emg_mean + K*emg_std))
-        
-        其中:
-            - reg_mean: 普通车辆平均等待时间
-            - reg_std: 普通车辆等待时间标准差 ⭐核心创新
-            - emg_mean: 应急车辆平均等待时间
-            - emg_std: 应急车辆等待时间标准差
-            - K: 标准差权重系数 (默认0.5)
-            - Z: 应急车辆惩罚倍数 (默认1.0)
-        
+        Project 1 standard deviation-aware reward.
+    
+        Reward formula (aligned with Project1 Agent.ipynb):
+            reward = 50 - ((reg_mean + K * reg_std) + Z * (emg_mean + K * emg_std))
+    
+        Where:
+            - reg_mean: mean waiting time of regular vehicles
+            - reg_std: standard deviation of regular vehicle waiting time ⭐ core innovation
+            - emg_mean: mean waiting time of emergency vehicles
+            - emg_std: standard deviation of emergency vehicle waiting time
+            - K: standard deviation weighting factor (default 0.5)
+            - Z: emergency vehicle penalty multiplier (default 1.0)
+    
         Returns:
-            reward: float, 奖励值
-                - 范围约为 [-150, 50]
-                - 正值表示交通状态良好
-                - 负值表示拥堵严重
+            reward: float
+                - approximately in range [-150, 50]
+                - positive values indicate good traffic conditions
+                - negative values indicate congestion
         """
         config = self.REWARD_CONFIGS['project1_std_reward']
         K = config['K']
@@ -297,68 +307,68 @@ class GetRewards(ObservationFunction):
         base_reward = config['base_reward']
         ambulance_type_ids = config['ambulance_type_ids']
         
-        # ========== 1. 收集所有观测车道的等待时间分布 ==========
-        regular_waiting_times = []  # 普通车辆
-        emergency_waiting_times = []  # 应急车辆
+        # ========== 1. collect waiting time distribution from all observed lanes ==========
+        regular_waiting_times = []  # regular vehicles
+        emergency_waiting_times = []  # emergency vehicles
         
         eng = self.world.eng
         
-        # 遍历所有观测车道
+        # iterate over all observed lanes
         for road_lanes in self.lanes_road_observed:
             for lane_id in road_lanes:
                 try:
-                    # 获取车道上的所有车辆
+                    # get all vehicles on lane
                     vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
                     
                     for veh_id in vehicle_ids:
                         try:
-                            # 获取等待时间（累计等待时间）
+                            # Get accumulated waiting time
                             waiting_time = eng.vehicle.getAccumulatedWaitingTime(veh_id)
                             
-                            # 判断车辆类型
+                            # Determine vehicle type
                             veh_type = eng.vehicle.getTypeID(veh_id)
                             
                             if veh_type in ambulance_type_ids:
-                                # 应急车辆
+                                # Emergency vehicle
                                 emergency_waiting_times.append(waiting_time)
                             else:
-                                # 普通车辆
+                                # Regular vehicle
                                 regular_waiting_times.append(waiting_time)
                         
                         except Exception as e:
-                            # 单个车辆信息获取失败，跳过
+                            # Skip vehicles with failed data retrieval
                             continue
                 
                 except Exception as e:
-                    # 车道信息获取失败，跳过
+                    # Skip lanes with errors
                     continue
         
-        # ========== 2. 计算普通车辆的统计量 ==========
+        # ========== 2. Compute statistics for regular vehicles ==========
         if len(regular_waiting_times) > 0:
             reg_mean = float(np.mean(regular_waiting_times))
             reg_std = float(np.std(regular_waiting_times))
         else:
-            # 没有普通车辆，设为0（理想状态）
+            # no regular vehicles, set to 0 (ideal state)
             reg_mean = 0.0
             reg_std = 0.0
         
-        # ========== 3. 计算应急车辆的统计量 ==========
+        # ========== 3. Compute statistics for emergency vehicles ==========
         if len(emergency_waiting_times) > 0:
             emg_mean = float(np.mean(emergency_waiting_times))
             emg_std = float(np.std(emergency_waiting_times))
         else:
-            # 没有应急车辆，设为0
+            # No emergency vehicles
             emg_mean = 0.0
             emg_std = 0.0
         
-        # ========== 4. 计算奖励（完全对齐项目1公式）==========
+        # ========== 4. Compute reward (fully aligned with formula) ==========
         reward = base_reward - (
             (reg_mean + K * reg_std) + 
             Z * (emg_mean + K * emg_std)
         )
         
-        # ========== 5. 可选：记录调试信息 ==========
-        # 如果需要调试，可以取消注释以下代码
+        # ========== 5. Optional debugging info ==========
+        # Uncomment if debugging is needed
         # if hasattr(self.world, '_debug_reward_stats'):
         #     self.world._debug_reward_stats = {
         #         'reg_mean': reg_mean,
@@ -375,25 +385,26 @@ class GetRewards(ObservationFunction):
 
     def _compute_project1_std_reward_with_configurable_params(self, K=None, Z=None) -> float:
         """
-        项目1标准差奖励 - 支持外部传入K和Z参数（用于参数扫描实验）
-        
+        Project 1 standard deviation reward with configurable K and Z parameters
+        (used for parameter sweep experiments)
+    
         Args:
-            K: 标准差权重系数（如果为None，使用配置中的默认值）
-            Z: 应急车辆惩罚倍数（如果为None，使用配置中的默认值）
-        
+            K: standard deviation weight factor (if None, use config default)
+            Z: emergency vehicle penalty multiplier (if None, use config default)
+    
         Returns:
             reward: float
         """
         config = self.REWARD_CONFIGS['project1_std_reward']
         
-        # 使用传入参数或默认值
+        # Use provided or default parameters
         K = K if K is not None else config['K']
         Z = Z if Z is not None else config['Z']
         
         base_reward = config['base_reward']
         ambulance_type_ids = config['ambulance_type_ids']
         
-        # 收集等待时间
+        # Collect waiting times
         regular_waiting_times = []
         emergency_waiting_times = []
         
@@ -418,13 +429,13 @@ class GetRewards(ObservationFunction):
                 except:
                     continue
         
-        # 计算统计量
+        # Compute statistics
         reg_mean = float(np.mean(regular_waiting_times)) if len(regular_waiting_times) > 0 else 0.0
         reg_std = float(np.std(regular_waiting_times)) if len(regular_waiting_times) > 0 else 0.0
         emg_mean = float(np.mean(emergency_waiting_times)) if len(emergency_waiting_times) > 0 else 0.0
         emg_std = float(np.std(emergency_waiting_times)) if len(emergency_waiting_times) > 0 else 0.0
         
-        # 计算奖励
+        # Compute reward
         reward = base_reward - (
             (reg_mean + K * reg_std) + 
             Z * (emg_mean + K * emg_std)
@@ -432,10 +443,10 @@ class GetRewards(ObservationFunction):
         
         return float(reward)
     
-    def get_reward_statistics(self) -> dict:
+    def get_reward_statistics_old(self) -> dict:
         """
-        获取当前时刻的奖励统计信息（用于分析）
-        
+        Get reward statistics at the current timestep (for analysis).
+    
         Returns:
             stats: dict
                 {
@@ -467,7 +478,7 @@ class GetRewards(ObservationFunction):
         base_reward = config.get('base_reward', 50.0)
         ambulance_type_ids = config.get('ambulance_type_ids', ['ambulance_type', 'emergency'])
         
-        # 收集等待时间
+        # Collect waiting times
         regular_waiting_times = []
         emergency_waiting_times = []
         
@@ -492,7 +503,7 @@ class GetRewards(ObservationFunction):
                 except:
                     continue
         
-        # 计算统计信息
+        # Compute statistics
         stats = {
             'regular_vehicles': {
                 'count': len(regular_waiting_times),
@@ -510,7 +521,7 @@ class GetRewards(ObservationFunction):
             }
         }
         
-        # 计算奖励组件
+        # Compute reward components
         reg_mean = stats['regular_vehicles']['mean_waiting']
         reg_std = stats['regular_vehicles']['std_waiting']
         emg_mean = stats['emergency_vehicles']['mean_waiting']
@@ -533,7 +544,159 @@ class GetRewards(ObservationFunction):
 
 
 
+    def get_reward_statistics(self) -> dict:
+        """
+        Gets new reward statistics at the current timestep (for analysis).
+        Group 1 = regular traffic that has potential to disrupt EVs – ie. They are infront and travelling along the EVs path
+        Group 2 = all other regular traffic (ie. Has no reasonable potential to get in the way of the EV)
+        
+        Returns:
+            stats: dict
+                {
+                    'regular_group1_vehicles': {
+                        'count': int,
+                        'mean_waiting': float,
+                        'std_waiting': float,
+                        'max_waiting': float,
+                        'min_waiting': float
+                    },
+                    'regular_group2_vehicles': {
+                        'count': int,
+                        'mean_waiting': float,
+                        'std_waiting': float,
+                        'max_waiting': float,
+                        'min_waiting': float
+                    },
+                    'emergency_vehicles': {
+                        'count': int,
+                        'mean_waiting': float,
+                        'std_waiting': float,
+                        'max_waiting': float,
+                        'min_waiting': float
+                    },
+                    'reward_components': { # to be changed
+                        'base': float,
+                        'regular_penalty': float,
+                        'emergency_penalty': float,
+                        'total_reward': float
+                    }
+                }
+        """
+        config = self.REWARD_CONFIGS.get('project1_std_reward', {}) # TODO: maybe needs to change?
+        K = config.get('K', 0.5)
+        Z = config.get('Z', 1.0)
+        Y = config.get('Y', 1.0) # TODO: may need to be fixed - added to config file - group 2
+        X = config.get('X', 1.0) # TODO: may need to be fixed - added to config file - group 1
+        base_reward = config.get('base_reward', 50.0)
+        ambulance_type_ids = config.get('ambulance_type_ids', ['ambulance_type', 'emergency'])
+        
+        # Collect waiting times
+        regular_group1_waiting_times = []
+        regular_group2_waiting_times = []
+        emergency_waiting_times = []
+        
+        eng = self.world.eng
+        
+        
+        # assumes only 1 EV present at a time for now and is restricted to same lane only
+        # TODO: make this not break for multiple EV scenario
+        EV_present = False
+        EV_lane_id = None
+        EV_position = None
+        
+        for veh_id in eng.vehicle.getIDList():
+            veh_type = eng.vehicle.getTypeID(veh_id)
 
+            if veh_type in ambulance_type_ids:
+                EV_present = True
+                EV_lane_id = eng.vehicle.getLaneID(veh_id)
+                EV_position = eng.vehicle.getLanePosition(veh_id)
+                break
+        
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+                    
+                    for veh_id in vehicle_ids:
+                        try:
+                            waiting_time = eng.vehicle.getAccumulatedWaitingTime(veh_id)
+                            veh_type = eng.vehicle.getTypeID(veh_id)
+                            
+                            if veh_type in ambulance_type_ids:
+                                emergency_waiting_times.append(waiting_time)
+                                
+                            else:
+                                # TODO: could make this interval based - so only happens every so often
+                                if EV_present == True and lane_id == EV_lane_id:
+                                    veh_position = eng.vehicle.getLanePosition(veh_id) # unsure if this (.eng) will work
+                                    if veh_position > EV_position:
+                                        regular_group1_waiting_times.append(waiting_time) # Group 1 - EV blocking
+                                
+                                else:
+                                    regular_group2_waiting_times.append(waiting_time)
+                                
+                                
+                        except:
+                            continue
+                except:
+                    continue
+        
+        # Compute statistics
+        stats = {
+            'regular_group1_vehicles': {
+                'count': len(regular_group1_waiting_times),
+                'mean_waiting': float(np.mean(regular_group1_waiting_times)) if len(regular_group1_waiting_times) > 0 else 0.0,
+                'std_waiting': float(np.std(regular_group1_waiting_times)) if len(regular_group1_waiting_times) > 0 else 0.0,
+                'max_waiting': float(np.max(regular_group1_waiting_times)) if len(regular_group1_waiting_times) > 0 else 0.0,
+                'min_waiting': float(np.min(regular_group1_waiting_times)) if len(regular_group1_waiting_times) > 0 else 0.0,
+            },
+            'regular_group2_vehicles': {
+                'count': len(regular_group2_waiting_times),
+                'mean_waiting': float(np.mean(regular_group2_waiting_times)) if len(regular_group2_waiting_times) > 0 else 0.0,
+                'std_waiting': float(np.std(regular_group2_waiting_times)) if len(regular_group2_waiting_times) > 0 else 0.0,
+                'max_waiting': float(np.max(regular_group2_waiting_times)) if len(regular_group2_waiting_times) > 0 else 0.0,
+                'min_waiting': float(np.min(regular_group2_waiting_times)) if len(regular_group2_waiting_times) > 0 else 0.0,
+            },
+            'emergency_vehicles': {
+                'count': len(emergency_waiting_times),
+                'mean_waiting': float(np.mean(emergency_waiting_times)) if len(emergency_waiting_times) > 0 else 0.0,
+                'std_waiting': float(np.std(emergency_waiting_times)) if len(emergency_waiting_times) > 0 else 0.0,
+                'max_waiting': float(np.max(emergency_waiting_times)) if len(emergency_waiting_times) > 0 else 0.0,
+                'min_waiting': float(np.min(emergency_waiting_times)) if len(emergency_waiting_times) > 0 else 0.0,
+            }
+        }
+        
+        # Compute reward components
+        reg_group1_mean = stats['regular_group1_vehicles']['mean_waiting']
+        reg_group1_std = stats['regular_group1_vehicles']['std_waiting']
+        reg_group2_mean = stats['regular_group2_vehicles']['mean_waiting']
+        reg_group2_std = stats['regular_group2_vehicles']['std_waiting']
+        emg_mean = stats['emergency_vehicles']['mean_waiting']
+        emg_std = stats['emergency_vehicles']['std_waiting']
+        
+        regular_group1_penalty = X * (reg_group1_mean + K * reg_group1_std)
+        regular_group2_penalty = Y * (reg_group2_mean + K * reg_group2_std)
+        total_regular_penalty = regular_group1_penalty + regular_group2_penalty
+        print(regular_group1_penalty, regular_group2_penalty, total_regular_penalty)
+
+        emergency_penalty = Z * (emg_mean + K * emg_std)
+        total_reward = base_reward - total_regular_penalty - emergency_penalty
+        
+        stats['reward_components'] = {
+            'base': base_reward,
+            'total_regular_penalty': total_regular_penalty,
+            'regular_group1_penalty': regular_group1_penalty,
+            'regular_group2_penalty': regular_group2_penalty,
+            'emergency_penalty': emergency_penalty,
+            'total_reward': total_reward,
+            'K': K,
+            'Z': Z,
+            'Y': Y,
+            'X': X
+        }
+        
+        return stats
 
 
 
@@ -569,22 +732,22 @@ class GetRewards(ObservationFunction):
     #     if self.negative:
     #         reward_array = reward_array * (-1)
         
-    #     # ✅ 计算差值奖励
+    #     # ✅ compute difference-based reward
     #     if self.last_reward is not None:
-    #         # 差值：上次 - 当前（改善为正）
+    #         # difference: previous - current (improvement is positive)
     #         reward = self.last_reward - reward_array
     #     else:
-    #         # 第一次调用
+    #         # first call
     #         reward = np.zeros_like(reward_array)
-    #      # 更新历史值
+    #      # update historical value
     #     self.last_reward = reward_array.copy()
-    #     # ✅ 添加奖励归一化/缩放
-    #     # 方案1: 除以一个常数缩放（推荐）
-    #     # reward_array = reward_array / 1000.0  # 根据你的实际奖励范围调整
+    #     # ✅ add reward normalization/scaling
+    #     # option 1: divide by a constant scale (recommended)
+    #     # reward_array = reward_array / 1000.0  # adjust based on actual reward range
         
-    #     # 方案2: Clip到合理范围
+    #     # clip to reasonable range
     #     # reward_array = np.clip(reward_array, -10.0, 10.0)
         
-    #     # 方案3: 使用tanh压缩（如果奖励范围很大）
+    #     # option 3: use tanh compression (if reward range is large)
     #     # reward_array = np.tanh(reward_array / 1000.0) * 10.0
     #     return reward
