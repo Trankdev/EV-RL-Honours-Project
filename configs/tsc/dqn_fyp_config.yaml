@@ -1,0 +1,86 @@
+# ==================== Model Architecture ====================
+model:
+  name: "DQN"
+  network:
+    hidden_dim: 128
+
+# ==================== DQN Algorithm ====================
+algorithm:
+  name: "project1_std_dqn"
+
+  dqn:
+    gamma: 0.99
+    lr: 0.001
+    epsilon_start: 1.0
+    epsilon_decay: 0.9995
+    epsilon_min: 0.01
+    grad_clip: 10.0
+    replay_size: 50000
+    batch_size: 128
+    learning_start: 500
+    update_model_rate: 1
+    update_target_rate: 10
+    hidden_dim: 128
+
+  # -----------------------------------------------------------
+  # Observation: routed to _compute_project1_std_observation()
+  #   via algorithm_name = "project1_std_dqn" set in training script.
+  #   Observation state space will be changed in the future and thus this will be wrong in future
+  #   Produces a 68-dim vector:
+  #     [phase_onehot(N_phases)  +  12 lanes × 5 features]
+  #   Each lane's 5 features:
+  #     1. vehicle_count / 17
+  #     2. regular_vehicle avg wait / 100
+  #     3. regular_vehicle wait std  / 100  ⭐
+  #     4. emergency_vehicle max wait / 100
+  #     5. downstream congestion (1=clear, 0=blocked)
+  # -----------------------------------------------------------
+  observation:
+    obs_to_subscribe: ["lane_vehicles", "lane_waiting_time_count"]
+    normalize: false
+    norm_params: {}
+
+  # -----------------------------------------------------------
+  # Reward: routed to _compute_project1_std_reward()
+  #   reward has since been changed so below info is wrong
+  #   formula: 50 - [(X * (reg_group1_mean + K * reg_group1_std) + Y * (reg_group1_mean + K * reg_group1_std))  + Z*(emg_mean + K*emg_std)]
+  #   K, X, Y and Z are injected at runtime from CLI args.
+  # -----------------------------------------------------------
+  reward:
+    reward_to_subscribe: ["lane_waiting_time_count"]
+    reward_weights: [1.0]
+    scale: 1.0
+    clip_range: null
+
+  # K, X, Y and Z are read by the training script and logged; the reward
+  # function reads them from Rewards.REWARD_CONFIGS at runtime.
+  ambulance:
+    K: 0.5   # std-penalty weight
+    Z: 3.0   # emergency-vehicle penalty multiplier
+    Y: 1.0   # group 2 reward coeffecient
+    X: 1.0   # group 1 (EV blocking) reward coeffecient
+
+# ==================== Training Configuration ====================
+training:
+  max_episodes: 200
+  save_interval: 50
+  seed: 42
+
+# ==================== Environment ====================
+environment:
+  type: "sumo"
+  interface: "libsumo"
+  observation_type: "project1_std"
+  reward_type: "project1_std"
+  sync_mode: true
+
+metadata:
+  description: "DQN with project1-style std-aware obs+reward for EMV priority TSC"
+  notes: |
+    All of the below info has been changed and is wrong
+    Mirrors mappo_ambulance.yaml but uses DQN instead of MAPPO.
+    1. algorithm_name forced to "project1_std_dqn" in training script,
+       which routes obs/reward to project1 implementations.
+    2. Observation is 68-dim: includes waiting-time std and EMV info.
+    3. Reward = 50 - (X * (reg_group1_mean + K * reg_group1_std) + Y * (reg_group1_mean + K * reg_group1_std))  - Z*(emg_mean + K*emg_std).
+    4. Each intersection agent gets its own independent reward.
