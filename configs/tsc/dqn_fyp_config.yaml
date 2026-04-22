@@ -6,7 +6,7 @@ model:
 
 # ==================== DQN Algorithm ====================
 algorithm:
-  name: "project1_std_dqn"
+  name: "final_year_project_dqn"
 
   dqn:
     gamma: 0.99
@@ -70,8 +70,8 @@ training:
 environment:
   type: "sumo"
   interface: "libsumo"
-  observation_type: "project1_std"
-  reward_type: "project1_std"
+  observation_type: "project1_std" # change in future?
+  reward_type: "project1_std" # is changed but function name is same currently, but is for final_year_project reward
   sync_mode: true
 
 metadata:
