@@ -1,5 +1,6 @@
 """
-No-RL Baseline Evaluation (correct RL-mirrored version)
+OLD - No-RL Baseline Evaluation (correct RL-mirrored version)
+Does not feature new reward function and group 1 and 2 for regular vehs
 
 This version mirrors test_dqn_ambulance.py exactly,
 but replaces the neural policy with a deterministic rule.
