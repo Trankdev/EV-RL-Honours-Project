@@ -183,6 +183,10 @@ class GetRewards(ObservationFunction):
         if 'project1' in self.algorithm_name.lower() or 'std_dqn' in self.algorithm_name.lower():
             return self._compute_project1_std_reward()
         
+        # final year project case - mirrors above logic
+        if 'final_year_project' in self.algorithm_name.lower() or 'fyp' in self.algorithm_name.lower():
+            return self._compute_project1_std_reward()
+        
         # Emergency priority special case
         if 'emergency_vehicle_priority' in self.fns_subscribed:
             return self._compute_emergency_priority_reward()
@@ -556,10 +560,10 @@ class GetRewards(ObservationFunction):
         return stats
 
 ##############################################################################
-# New code for our final year project
+# New code for our final year project (FYP)
 ##############################################################################
 
-    def _compute_project1_std_reward(self) -> float:
+    def _compute_project1_std_reward(self) -> float: # TODO: rename this and fix all calls to this to reflect FYP better
         """
         Final year project reward
     

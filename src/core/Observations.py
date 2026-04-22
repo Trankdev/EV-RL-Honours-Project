@@ -37,7 +37,7 @@ class Observation(ObservationFunction):
         else:
             self.lanes_road_observed = tl_info['lanes_road_observed']
 
-        self._vehicle_size_min_gap = 7.5  # 车身长度 + 最小间距
+        self._vehicle_size_min_gap = 7.5 # Vehicle length + minimum gap
         self._flat_lanes_observed = [lane_id
                                      for road_lanes in self.lanes_road_observed
                                      for lane_id in road_lanes]
@@ -76,16 +76,20 @@ class Observation(ObservationFunction):
     def compute_observation(self) -> np.ndarray:
         observation_array = np.array([], dtype=np.float32)
 
-        # project1 / std_dqn 模式
+        # Project1 / std_DQN mode
         if 'project1' in self.algorithm_name.lower() or 'std_dqn' in self.algorithm_name.lower():
             return self._compute_project1_std_observation()
+        
+        # fyp mode - mirrors above
+        if 'final_year_project' in self.algorithm_name.lower() or 'fyp' in self.algorithm_name.lower():
+            return self._compute_project1_std_observation() # TODO: change this later to be for the fyp observation function
 
-        # 默认模式（MAPPO 等）：phase + min_green + 订阅特征
+        # Default mode (e.g., MAPPO): phase + min_green + subscribed features
         num_phases = len(self.ts.green_phases)
         phase_id = [1.0 if self.ts.green_phase == i else 0.0 for i in range(num_phases)]
         observation_array = np.append(observation_array, phase_id)
 
-        # 0 = 不能切换（未满足 min_green），1 = 可以切换
+        # 0 = cannot switch (min green not satisfied), 1 = can switch
         min_green_satisfied = [
             0.0 if self.ts.time_since_last_phase_change < self.ts.min_green + self.ts.yellow_phase_time
             else 1.0
@@ -114,8 +118,8 @@ class Observation(ObservationFunction):
         return observation_array
 
     def _normalize_features(self, feature_name: str, values: np.ndarray) -> np.ndarray:
-        """根据特征类型对值进行归一化。"""
-        # 优先使用 YAML 中配置的归一化参数
+        """Normalize feature values based on type."""
+        # Prefer normalization parameters defined in YAML
         norm_params = getattr(self.world, '_norm_params', {})
 
         if feature_name in norm_params:
@@ -127,7 +131,7 @@ class Observation(ObservationFunction):
                 normalized = np.clip(normalized, 0.0, clip_value)
             return normalized.astype(np.float32)
 
-        # 基于车道容量归一化
+        # Capacity-based normalization
         if feature_name in ('lane_waiting_count', 'lane_count'):
             if (self._lane_capacities is None) or (len(self._lane_capacities) != len(values)):
                 self._build_lane_capacity_cache()
@@ -160,33 +164,32 @@ class Observation(ObservationFunction):
 
     def _compute_project1_std_observation(self) -> np.ndarray:
         """
-        项目1风格观测：包含等待时间标准差。
+        Project1-style observation including waiting time standard deviation.
 
         Returns:
-            observation: numpy array, shape (num_phases + num_lanes * 5,)
+            observation: numpy array
                 = [phase_onehot(N_phases), lane_features(N_lanes × 5)]
 
-            车道数由路网自动决定（不硬编码为 12）。
-            每个车道 5 个特征:
-            1. 车辆数 / 17
-            2. 普通车辆平均等待时间 / 100
-            3. 普通车辆等待时间标准差 / 100  ⭐
-            4. 应急车辆最大等待时间 / 100
-            5. 出口道路拥堵状态 (0=堵塞, 1=畅通)
+        Each lane has 5 features:
+        1. vehicle count / 17
+        2. regular vehicle mean waiting time / 100
+        3. regular vehicle waiting time std / 100
+        4. emergency vehicle max waiting time / 100
+        5. outgoing congestion state (0 = blocked, 1 = free)
         """
         obs = []
 
-        # 1. 相位 one-hot 编码
+        # 1. Phase one-hot encoding
         num_phases = len(self.ts.green_phases)
         phase_onehot = [1.0 if self.ts.green_phase == i else 0.0
                         for i in range(num_phases)]
         obs.extend(phase_onehot)
 
-        # 2. 获取入口车道列表（自动适应路网，不填充/截断）
+        # 2. Flatten lane list (auto adapts to network size)
         flat_lanes = [lane_id for road_lanes in self.lanes_road_observed
                       for lane_id in road_lanes]
 
-        # 3. 计算每个车道的5个特征
+        # 3. Compute lane features
         for lane_idx, lane_id in enumerate(flat_lanes):
             if lane_id == 'dummy':
                 obs.extend([0.0, 0.0, 0.0, 0.0, 1.0])
@@ -195,17 +198,19 @@ class Observation(ObservationFunction):
             try:
                 vehicles_info = self._get_lane_vehicles_detailed(lane_id)
             except Exception as e:
-                print(f"Warning: 获取车道{lane_id}信息失败: {e}")
+                print(f"Warning: Failed to retrieve information for lane {lane_id}: {e}")
                 obs.extend([0.0, 0.0, 0.0, 0.0, 1.0])
                 continue
 
             regular_vehicles = [v for v in vehicles_info if not v['is_emergency']]
             emergency_vehicles = [v for v in vehicles_info if v['is_emergency']]
 
-            # 特征1: 车辆数 / 17
+            # Feature 1: vehicle count / 17
+            # TODO: Check where this 17 comes from and see if we need to change for ours
             feature1 = min(len(vehicles_info) / 17.0, 1.0)
 
-            # 特征2: 平均等待时间 / 100（仅普通车辆）
+            # Feature 2: mean waiting time / 100 (regular only)
+            # TODO: Check where this 100 comes from and see if we need to change for ours
             if len(regular_vehicles) > 0:
                 waiting_times = [v['waiting_time'] for v in regular_vehicles]
                 feature2 = min(np.mean(waiting_times) / 100.0, 1.0)
@@ -213,20 +218,22 @@ class Observation(ObservationFunction):
                 waiting_times = []
                 feature2 = 0.0
 
-            # 特征3: 等待时间标准差 / 100
+            # Feature 3: waiting time std / 100
+            # TODO: Check where this 100 comes from and see if we need to change for ours
             if len(waiting_times) > 1:
                 feature3 = min(np.std(waiting_times) / 100.0, 1.0)
             else:
                 feature3 = 0.0
 
-            # 特征4: 应急车辆最大等待时间 / 100
+            # Feature 4: emergency max waiting time / 100
+            # TODO: Check where this 100 comes from and see if we need to change for ours
             if len(emergency_vehicles) > 0:
                 emg_waiting_times = [v['waiting_time'] for v in emergency_vehicles]
                 feature4 = min(max(emg_waiting_times) / 100.0, 1.0)
             else:
                 feature4 = 0.0
 
-            # 特征5: 出口道路拥堵状态
+            # Feature 5: outgoing road congestion state
             feature5 = self._compute_outgoing_attention_for_lane(lane_idx)
 
             obs.extend([feature1, feature2, feature3, feature4, feature5])
@@ -235,10 +242,11 @@ class Observation(ObservationFunction):
 
     def _get_lane_vehicles_detailed(self, lane_id: str) -> list:
         """
-        获取车道上所有车辆的详细信息。
+        Get detailed vehicle information on a lane.
 
         Returns:
-            list of dict: [{'id', 'waiting_time', 'is_emergency', 'position'}, ...]
+            list of dicts:
+            [{'id', 'waiting_time', 'is_emergency', 'position'}, ...]
         """
         vehicles_info = []
 
@@ -267,17 +275,20 @@ class Observation(ObservationFunction):
 
         return vehicles_info
 
+# TODO: Fix the below function so that it works for any amount of outgoing lanes and can handle irregular patterns
+#       such as a 3 lane wide major approach and a 2 lane wide minor approach
+
     def _compute_outgoing_attention_for_lane(self, lane_idx: int) -> float:
         """
-        计算出口道路拥堵状态。
+        Compute outgoing road congestion state.
 
-        每3个入口车道对应一个出口道路：
-            lane_idx 0-2 → 出口0，lane_idx 3-5 → 出口1，...
+        Each 3 lanes correspond to one outgoing road:
+            lanes 0–2 → road 0, lanes 3–5 → road 1, etc.
 
         Returns:
-            float [0, 1]：1.0 = 畅通，0.0 = 完全拥堵
+            float in [0, 1]: 1.0 = free flow, 0.0 = fully congested
         """
-        outgoing_road_idx = lane_idx // 3
+        outgoing_road_idx = lane_idx // 3 # TODO: fix this / 3 thing prolly won't work for all networks
 
         try:
             if outgoing_road_idx >= len(self.ts.out_roads):
@@ -300,13 +311,13 @@ class Observation(ObservationFunction):
                     for veh_id in vehicle_ids:
                         position = eng.vehicle.getLanePosition(veh_id)
                         distance_to_end = lane_length - position
-                        # 只统计靠近出口路口（终点100米内）的车辆
+                        # Only count vehicles within 100m of exit
                         if distance_to_end <= 100:
                             total_vehicles += 1
                 except Exception:
                     continue
 
-            # attention值：1 - (车辆数 / 容量)，越拥堵值越小
+            # Attention value: 1 - (number of vehicles / capacity)
             capacity = 17 * len(out_lanes)
             congestion = 1.0 - min(total_vehicles / max(capacity, 1), 1.0)
             return float(congestion)

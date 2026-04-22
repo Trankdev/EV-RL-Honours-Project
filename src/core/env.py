@@ -9,6 +9,7 @@ import libsumo
 import json
 from .Rewards import GetRewards
 from .Observations import Observation
+
 class parse_sumo_config(): # Does static information extraction affect parallel simulation?
     def __init__(self, sumo_config, **kwargs):
         self.sumo_config = sumo_config
@@ -548,6 +549,18 @@ class parse_sumo_config(): # Does static information extraction affect parallel 
             num_phases   = len(self.green_phases[tl_id])
             num_in_lanes = sum(len(lanes) for lanes in tl_info['lanes_road_observed_in_only'])
             ob_length    = num_phases + num_in_lanes * 5
+
+            return gym.spaces.Box(
+                low=np.zeros(ob_length, dtype=np.float32),
+                high=np.ones(ob_length, dtype=np.float32),
+                dtype=np.float32
+            )
+        if 'final_year_project' in algorithm_name.lower() or 'fyp' in algorithm_name.lower():
+            # Dynamic format: phase(N_phases) + N_in_lanes × 5 features # TODO: change to be what we end up picking
+            # Number of lanes is determined by the network, not hardcoded as 12
+            num_phases   = len(self.green_phases[tl_id])
+            num_in_lanes = sum(len(lanes) for lanes in tl_info['lanes_road_observed_in_only'])
+            ob_length    = num_phases + num_in_lanes * 5 # TODO: will need to adjust to match observation space length
 
             return gym.spaces.Box(
                 low=np.zeros(ob_length, dtype=np.float32),
@@ -1206,7 +1219,7 @@ class World(parse_sumo_config, gym.Env):
         :return vehicle_maxspeed: max speed of each vehicle that have entered in roadnet
         '''
         # lane_id and time spent on the corresponding lane that each vehicle went through
-        vehicle_lane, self.vehicle_maxspeed = self.get_vehicle_lane() # get vehicles on tne roads except turning
+        vehicle_lane, self.vehicle_maxspeed = self.get_vehicle_lane() # get vehicles on the roads except turning
         vehicles = list(self.eng.vehicle.getIDList())
         # vehicles = [x for x in vehicle_lane]
         for vehicle in vehicles:
@@ -1460,7 +1473,7 @@ class World(parse_sumo_config, gym.Env):
             self.eng.simulationStep()
         current_time = self.get_current_time()
         self.step_counter = int(current_time)
-        print(f"DEBUG: Reset完成,当前step_counter = {self.step_counter}")
+        print(f"DEBUG: Reset complete, current step_counter = {self.step_counter}")
         
         # =====================Create intersection objects==================================
         self.id2intersection = dict()
@@ -1993,6 +2006,8 @@ class Intersection():
         self.Rewards = GetRewards(self, world, self.reward_to_subscribe, in_only=True, negative=True)
         self.last_reward = None
         self.accumulated_reward_since_last_action = 0  # 初始化累积奖励
+        
+
     def create_yellows(self, green_phases, yellow_duration, interface_flag):
         """
         find all possible yellow phases between each pair of phases
