@@ -457,8 +457,8 @@ Examples:
                         help='Path to the .pt model checkpoint')
     
     parser.add_argument('--config', type=str,
-                        default='configs/tsc/mappo_ambulance.yaml', # TODO: modify/make a new mappo.yaml
-                        help='YAML config used during training (default: configs/tsc/mappo_ambulance.yaml)') # TODO: modify/make a new mappo.yaml
+                        default='configs/tsc/mappo_fyp_config.yaml',
+                        help='YAML config used during training (default: configs/tsc/mappo_fyp_config.yaml)')
     parser.add_argument('--scenario-dir', type=str,
                         default='scenarios/3_intersection_corridor_TR', # change to scenario to be tested on
                         help='SUMO scenario directory')

@@ -229,7 +229,7 @@ def test_model(
     print(f"Using K={K}, Z={Z}, Y={Y}, X={X}")
     print(f"Reward formula : 50 - [(X * (reg_group1_mean + K * reg_group1_std) + Y * (reg_group2_mean + K * reg_group2_std)) + {Z}*(emg_mean + {K}*emg_std)]\n")
 
-    # Inject K / Z so the reward function uses the correct values
+    # Inject K / Z, Y and X so the reward function uses the correct values
     GetRewards.REWARD_CONFIGS['final_year_project_reward']['K'] = K
     GetRewards.REWARD_CONFIGS['final_year_project_reward']['Z'] = Z
     GetRewards.REWARD_CONFIGS['final_year_project_reward']['Y'] = Y
@@ -405,6 +405,8 @@ def test_model(
         'algorithm_name_env':    'final_year_project_dqn',
         'K':                     K,
         'Z':                     Z,
+        'Y':                     Y,
+        'X':                     X,
         'num_episodes':          num_episodes,
         'policy':                'greedy (epsilon=0)',
         'seed':                  seed,
