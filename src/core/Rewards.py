@@ -567,34 +567,15 @@ class GetRewards(ObservationFunction):
         """
         Final year project reward
     
-        Reward formula (aligned with Project1 Agent.ipynb - idk what this .ipynb thing is):
-            reward = 50 - ((X * (reg_group1_mean + K * reg_group1_std) + Y * (reg_group1_mean + K * reg_group1_std)) 
-                           + Z * (emg_mean + K * emg_std))
-    
         Where:
-            - reg_group1_mean: mean waiting time of regular group 1 vehicles ⭐ new
-            - reg_group1_std: standard deviation of regular group 1 vehicle waiting time ⭐ new 
-            - reg_group2_mean: mean waiting time of regular group 2 vehicles ⭐ new
-            - reg_group2_std: standard deviation of regular group 2 vehicle waiting time ⭐ new 
-            - emg_mean: mean waiting time of emergency vehicles
-            - emg_std: standard deviation of emergency vehicle waiting time
-            - K: standard deviation weighting factor (default 0.5)
             - Z: emergency vehicle penalty multiplier (default 1.0)
-            - Y: group 2 vehicle weighting factor (default 1.0) ⭐ new
-            - X:group 1 vehicle weighting factor (default 1.0) ⭐ new
     
         Returns:
             reward: float
-                - approximately in range [-150, 50]
-                - positive values indicate good traffic conditions
-                - negative values indicate congestion
         """
-        config = self.REWARD_CONFIGS['final_year_project_reward']
-        K = config['K']
+        config = self.REWARD_CONFIGS['final_year_project_reward'] # TODO: look into how this works
         Z = config['Z']
-        Y = config['Y']
-        X = config['X']
-        base_reward = config['base_reward']
+        base_reward = config['base_reward'] # TODO: look into how this works
         ambulance_type_ids = config['ambulance_type_ids']
         
         # ========== 1. collect waiting time distribution from all observed lanes ==========
@@ -684,7 +665,7 @@ class GetRewards(ObservationFunction):
             emg_std = 0.0
         
         # ========== 4. Compute reward (fully aligned with formula) ==========
-        reward = base_reward - (
+        reward = base_reward - ( # TODO: look into how this works
             X * (reg_group1_mean + K * reg_group1_std) + 
             Y * (reg_group2_mean + K * reg_group2_std) +
             Z * (emg_mean + K * emg_std)
@@ -706,27 +687,21 @@ class GetRewards(ObservationFunction):
         return float(reward)
 
 
-    def _compute_project1_std_reward_with_configurable_params(self, K=None, Z=None, Y=None, X=None) -> float:
+    def _compute_project1_std_reward_with_configurable_params(self, Z=None) -> float:
         """
-        Project 1 standard deviation reward with configurable K and Z parameters
+        Project 1 standard deviation reward with configurable Z parameters
         (used for parameter sweep experiments)
     
         Args:
-            K: standard deviation weight factor (if None, use config default)
             Z: emergency vehicle penalty multiplier (if None, use config default)
-            Y: group 2 weight factor (if None, use config default)
-            X: group 1 (EV disrupting) weight factor (if None, use config default)
     
         Returns:
             reward: float
         """
-        config = self.REWARD_CONFIGS['final_year_project_reward']
+        config = self.REWARD_CONFIGS['final_year_project_reward'] # TODO: look into how this works
         
         # Use provided or default parameters
-        K = K if K is not None else config['K']
         Z = Z if Z is not None else config['Z']
-        Y = Y if Y is not None else config['Y']
-        X = X if X is not None else config['X']
         
         base_reward = config['base_reward']
         ambulance_type_ids = config['ambulance_type_ids']
@@ -790,7 +765,7 @@ class GetRewards(ObservationFunction):
         emg_std = float(np.std(emergency_waiting_times)) if len(emergency_waiting_times) > 0 else 0.0
         
         # Compute reward
-        reward = base_reward - (
+        reward = base_reward - ( # TODO: update to new reward function
             X * (reg_group1_mean + K * reg_group1_std) + 
             Y * (reg_group2_mean + K * reg_group2_std) +
             Z * (emg_mean + K * emg_std)
@@ -836,18 +811,21 @@ class GetRewards(ObservationFunction):
                     }
                 }
         """
-        config = self.REWARD_CONFIGS.get('final_year_project_reward', {})
-        K = config.get('K', 0.5)
+        config = self.REWARD_CONFIGS.get('final_year_project_reward', {}) # TODO: look into how this works
         Z = config.get('Z', 1.0)
-        Y = config.get('Y', 1.0) # TODO: may need to be fixed - added to config file - group 2
-        X = config.get('X', 1.0) # TODO: may need to be fixed - added to config file - group 1
-        base_reward = config.get('base_reward', 50.0)
+        
+        
+        #base_reward = config.get('base_reward', 50.0) # for OLD REWARD
         ambulance_type_ids = config.get('ambulance_type_ids', ['ambulance_type', 'emergency'])
         
         # Collect waiting times
         regular_group1_waiting_times = []
         regular_group2_waiting_times = []
         emergency_waiting_times = []
+        
+        # for new reward
+        lane_queues = []
+        lane_weights = []
         
         eng = self.world.eng
         
@@ -857,6 +835,8 @@ class GetRewards(ObservationFunction):
         EV_present = False
         EV_lane_id = None
         EV_position = None
+        EV_id = None # this only works for one/the first detected EV at the moment...
+        div_error_avoider = 1e-6
         
         #for veh_id in eng.vehicle.getIDList():
             #veh_type = eng.vehicle.getTypeID(veh_id)
@@ -872,13 +852,41 @@ class GetRewards(ObservationFunction):
                 try:
                     vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
                     
+                    # Queue length = number of halting vehicles (speed less than 0.1 m/s)
+                    q_i = eng.lane.getLastStepHaltingNumber(lane_id)
+                    
+                    # Default lane weighting factor
+                    w_i = 1.0
+                    
                     for veh_id in vehicle_ids:
                         veh_type = eng.vehicle.getTypeID(veh_id)
                         if veh_type in ambulance_type_ids:
                             EV_present = True
                             EV_lane_id = eng.vehicle.getLaneID(veh_id)
                             EV_position = eng.vehicle.getLanePosition(veh_id)
+                            EV_id = veh_id
                             break
+                        
+                    # If EV is in this lane -> Compute EV_tta
+                    if EV_present == True and lane_id == EV_lane_id:
+                        # distance remaining along lane
+                        lane_length = eng.lane.getLength(lane_id)
+                        dist_to_stop = lane_length - EV_position
+                        
+                        # simple TTA approximation
+                        EV_speed = eng.vehicle.getSpeed(EV_id)
+                        EV_speed = max(EV_speed, 1e-3)
+                        
+                        EV_tta = dist_to_stop / EV_speed # TODO: need to normalise EV tta
+                        
+                        # OPTIONAL: normalise TTA (important)
+                        #max_tta = 30.0  # tune this
+                        #EV_tta_norm = min(EV_tta / max_tta, 1.0)
+                        
+                        w_i = 1 + Z / max(EV_tta, div_error_avoider)
+                    
+                    lane_queues.append(q_i)
+                    lane_weights.append(w_i)
                         
                     for veh_id in vehicle_ids:
                         try:
@@ -889,7 +897,6 @@ class GetRewards(ObservationFunction):
                                 emergency_waiting_times.append(waiting_time)
                                 
                             else:
-                                # TODO: could make this interval based - so only happens every so often
                                 if EV_present == True and lane_id == EV_lane_id:
                                     veh_position = eng.vehicle.getLanePosition(veh_id) 
                                     if veh_position > EV_position:
@@ -932,32 +939,32 @@ class GetRewards(ObservationFunction):
             }
         }
         
+        # OLD REWARD IDEA WE HAD utilizing two groups and EV
         # Compute reward components
-        reg_group1_mean = stats['regular_group1_vehicles']['mean_waiting']
-        reg_group1_std = stats['regular_group1_vehicles']['std_waiting']
-        reg_group2_mean = stats['regular_group2_vehicles']['mean_waiting']
-        reg_group2_std = stats['regular_group2_vehicles']['std_waiting']
-        emg_mean = stats['emergency_vehicles']['mean_waiting']
-        emg_std = stats['emergency_vehicles']['std_waiting']
+        #reg_group1_mean = stats['regular_group1_vehicles']['mean_waiting']
+        #reg_group1_std = stats['regular_group1_vehicles']['std_waiting']
+        #reg_group2_mean = stats['regular_group2_vehicles']['mean_waiting']
+        #reg_group2_std = stats['regular_group2_vehicles']['std_waiting']
+        #emg_mean = stats['emergency_vehicles']['mean_waiting']
+        #emg_std = stats['emergency_vehicles']['std_waiting']
         
-        regular_group1_penalty = X * (reg_group1_mean + K * reg_group1_std)
-        regular_group2_penalty = Y * (reg_group2_mean + K * reg_group2_std)
-        total_regular_penalty = regular_group1_penalty + regular_group2_penalty
+        
+        # OLD REWARD IDEA WE HAD utilizing two groups and EV
+        #regular_group1_penalty = X * (reg_group1_mean + K * reg_group1_std) 
+        #regular_group2_penalty = Y * (reg_group2_mean + K * reg_group2_std)
+        #total_regular_penalty = regular_group1_penalty + regular_group2_penalty 
 
-        emergency_penalty = Z * (emg_mean + K * emg_std)
-        total_reward = base_reward - total_regular_penalty - emergency_penalty
+        #emergency_penalty = Z * (emg_mean + K * emg_std) 
+        #total_reward = base_reward - total_regular_penalty - emergency_penalty 
+        
+        reward = - np.sum(np.array(lane_weights) * np.array(lane_queues))
         
         stats['reward_components'] = {
-            'base': base_reward,
-            'total_regular_penalty': total_regular_penalty,
-            'regular_group1_penalty': regular_group1_penalty,
-            'regular_group2_penalty': regular_group2_penalty,
-            'emergency_penalty': emergency_penalty,
-            'total_reward': total_reward,
-            'K': K,
+            'lane_queues': lane_queues,
+            'lane_weights': lane_weights,
+            'total_weighted_queue': float(np.sum(np.array(lane_weights) * np.array(lane_queues))),
+            'total_reward': float(reward),
             'Z': Z,
-            'Y': Y,
-            'X': X
         }
         return stats
 
