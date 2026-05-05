@@ -40,8 +40,8 @@ algorithm:
   # -----------------------------------------------------------
   # Reward: routed to _compute_project1_std_reward()
   #   reward has since been changed so below info is wrong
-  #   formula: 50 - [(X * (reg_group1_mean + K * reg_group1_std) + Y * (reg_group1_mean + K * reg_group1_std))  + Z*(emg_mean + K*emg_std)]
-  #   K, X, Y and Z are injected at runtime from CLI args.
+  #   formula: -sum(lane_weights * lane_queues) # new reward function, where lane_weights = (1 + Z/EV_norm_tta)
+  #   Z are injected at runtime from CLI args.
   # -----------------------------------------------------------
   reward:
     reward_to_subscribe: ["lane_waiting_time_count"]
@@ -49,13 +49,10 @@ algorithm:
     scale: 1.0
     clip_range: null
 
-  # K, X, Y and Z are read by the training script and logged; the reward
+  # Z are read by the training script and logged; the reward
   # function reads them from Rewards.REWARD_CONFIGS at runtime.
   ambulance:
-    K: 0.5   # std-penalty weight
     Z: 3.0   # emergency-vehicle penalty multiplier
-    Y: 1.0   # group 2 reward coeffecient
-    X: 1.0   # group 1 (EV blocking) reward coeffecient
 
 # ==================== Training Configuration ====================
 training:
@@ -79,5 +76,5 @@ metadata:
     1. algorithm_name forced to "project1_std_dqn" in training script,
        which routes obs/reward to project1 implementations.
     2. Observation is 68-dim: includes waiting-time std and EMV info.
-    3. Reward = 50 - (reg_mean + K*reg_std) - Z*(emg_mean + K*emg_std).
+    3. Reward = -sum(lane_weights * lane_queues) # new reward function, where lane_weights = (1 + Z/EV_norm_tta)
     4. common_reward=false so each intersection agent gets its own reward.
