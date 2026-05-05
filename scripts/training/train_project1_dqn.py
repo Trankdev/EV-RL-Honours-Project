@@ -130,7 +130,7 @@ def run_episode(env, agent, rpm, train=True,
         try:
             world = env.env
             first_ts = world.id2intersection[agent_ids[0]]
-            stats = first_ts.Rewards.get_reward_statistics()
+            stats = first_ts.Rewards.get_reward_statistics() # unsure how it gets this but it does
             ep_reg_mean_sum += stats['regular_vehicles']['mean_waiting']
             ep_reg_std_sum  += stats['regular_vehicles']['std_waiting']
             ep_emg_mean_sum += stats['emergency_vehicles']['mean_waiting']
@@ -184,10 +184,10 @@ def create_sumo_config(scenario_dir, config_dir, gui=False):
     config = {
         "name": "emergency_dqn_ambulance", 
         "dir": scenario_dir, 
-        "roadnetFile": "3_intersection_corridor_TR.net.xml", # Network file
-        "flowFile": "vtypes.rou.xml,3_intersection_corridor_TR.rou.xml,ambulance.rou.xml", # Route and demand files
-        "combined_file": "3_intersection_corridor_TR.sumocfg", # Combined SUMO config file
-        "gui": gui, # run with gui?
+        "roadnetFile": "2_intersection_corridor.net.xml", # Network file
+        "flowFile": "vtypes.rou.xml,2_intersection_corridor.rou.xml,ambulance.rou.xml", # Route and demand files
+        "combined_file": "2_intersection_corridor.sumocfg", # Combined SUMO config file
+        "gui": gui, # run with gui? - setting True didn't change anything??? fix??
         "no_warning": True,
         "decision_interval": 5, # Interval between agent actions/decisions
         "min_green": 5, # Min time light must be green for
@@ -213,7 +213,7 @@ def main():
     parser.add_argument('--config', type=str, default='dqn_ambulance',
                         help='Config name in configs/tsc/ (default: dqn_ambulance)')
     parser.add_argument('--scenario-dir', type=str,
-                        default='scenarios/3_intersection_corridor_TR',
+                        default='scenarios/2_intersection_corridor',
                         help='SUMO scenario directory')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
 

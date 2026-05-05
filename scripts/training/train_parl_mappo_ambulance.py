@@ -60,7 +60,9 @@ class Tee:
 # Episode runner
 # ============================================================================
 
-def run_episode(env, agent, train=True):
+
+#def run_episode(env, agent, train=True):
+def run_episode(env, agent, obs_dim, train=True):
     """Run one episode and return metrics including EMV-aware reward stats."""
     obs = env.reset()
     agent.reset()
@@ -88,7 +90,7 @@ def run_episode(env, agent, train=True):
             common_reward = sum(reward_dict.values())
             rewards = np.array([common_reward] * n_agents)
         else:
-            rewards = np.array([reward_dict[aid] for aid in agent_ids])
+            rewards = np.array([reward_dict.get(aid, 0.0) for aid in agent_ids])
 
         if train:
             agent.store_transition(obs_list, actions, rewards)
@@ -114,7 +116,9 @@ def run_episode(env, agent, train=True):
             break
 
     if train:
-        final_obs_list = [obs[aid] for aid in agent_ids]
+        #final_obs_list = [obs[aid] for aid in agent_ids]
+        final_obs_list = [obs.get(aid, np.zeros(obs_dim, dtype=np.float32)) for aid in agent_ids]
+
         agent.finish_episode(final_obs_list)
         train_stats = agent.update()
     else:
@@ -158,9 +162,9 @@ def create_sumo_config(scenario_dir, config_dir, gui=False):
     config = {
         "name": "emergency_mappo_ambulance",
         "dir": scenario_dir,
-        "roadnetFile": "3_intersection_corridor_TR.net.xml",
-        "flowFile": "vtypes.rou.xml,3_intersection_corridor_TR.rou.xml,ambulance.rou.xml",
-        "combined_file": "3_intersection_corridor_TR.sumocfg",
+        "roadnetFile": "2_intersection_corridor.net.xml",
+        "flowFile": "vtypes.rou.xml,2_intersection_corridor.rou.xml,ambulance.rou.xml",
+        "combined_file": "2_intersection_corridor.sumocfg",
         "gui": gui,
         "no_warning": True,
         "decision_interval": 5,
@@ -187,7 +191,7 @@ def main():
     parser.add_argument('--config', type=str, default='mappo_ambulance',
                         help='Config name in configs/tsc/ (default: mappo_ambulance)')
     parser.add_argument('--scenario-dir', type=str,
-                        default='scenarios/3_intersection_corridor_TR', # change this when using different scenarios
+                        default='scenarios/2_intersection_corridor', # change this when using different scenarios
                         help='SUMO scenario directory')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
 
@@ -373,7 +377,7 @@ def main():
     for episode in range(start_episode, max_episodes + 1):
         (total_reward, steps, train_stats,
          ambulance_duration, civilian_avg_trip_time,
-         reward_stats) = run_episode(env, agent, train=True)
+         reward_stats) = run_episode(env, agent, obs_dim, train=True)
 
         avg_reward = np.mean([total_reward[aid] for aid in agent_ids])
 
