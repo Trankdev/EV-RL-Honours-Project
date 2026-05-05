@@ -224,9 +224,9 @@ def test_model(
     sumo_cfg = {
         "name":             "test_mappo_emergency_ambulance", # was 'test_emergency_ambulance' historically
         "dir":              scenario_dir,
-        "roadnetFile":      "3_intersection_corridor_TR.net.xml",
-        "flowFile":         "vtypes.rou.xml,3_intersection_corridor_TR.rou.xml,ambulance.rou.xml",
-        "combined_file":    "3_intersection_corridor_TR.sumocfg",
+        "roadnetFile":      "2_intersection_corridor.net.xml",
+        "flowFile":         "vtypes.rou.xml,2_intersection_corridor.rou.xml,ambulance.rou.xml",
+        "combined_file":    "2_intersection_corridor.sumocfg",
         "gui":              True, # Forces GUI on if set to 'True' otherwise set to 'gui' variable
         "no_warning":       True,
         "decision_interval": 5,
@@ -432,14 +432,14 @@ Examples:
 """)
 
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/mappo_ambulance_K0.5_Z3.0_seed42_20260410_165231/models/agent_final.pt',
+                        default='experiments/old_reward_mappo_ambulance_K0.5_Z3.0_seed42_20260505_180759/models/agent_final.pt',
                         help='Path to the .pt model checkpoint')
     
     parser.add_argument('--config', type=str,
                         default='configs/tsc/mappo_fyp_config.yaml',
                         help='YAML config used during training (default: configs/tsc/mappo_fyp_config.yaml)')
     parser.add_argument('--scenario-dir', type=str,
-                        default='scenarios/3_intersection_corridor_TR', # change to scenario to be tested on
+                        default='scenarios/2_intersection_corridor', # change to scenario to be tested on
                         help='SUMO scenario directory')
 
     # Z override

@@ -232,9 +232,9 @@ def test_model(
     sumo_cfg = {
         "name":              "test_emergency_dqn_ambulance",
         "dir":               scenario_dir,
-        "roadnetFile":       "3_intersection_corridor_TR.net.xml",
-        "flowFile":          "vtypes.rou.xml, 3_intersection_corridor_TR.rou.xml,ambulance.rou.xml",
-        "combined_file":     "3_intersection_corridor_TR.sumocfg",
+        "roadnetFile":       "2_intersection_corridor.net.xml",
+        "flowFile":          "vtypes.rou.xml, 2_intersection_corridor.rou.xml,ambulance.rou.xml",
+        "combined_file":     "2_intersection_corridor.sumocfg",
         "gui":               gui,
         "no_warning":        True,
         "decision_interval": 5,
@@ -447,14 +447,14 @@ Examples:
 """)
 
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/dqn_ambulance_K0.5_Z3.0_seed42_20260410_153418/models/agent_final.pt',
+                        default='experiments/old_reward_dqn_ambulance_K0.5_Z3.0_seed42_20260505_181704/models/agent_final.pt',
                         help='Path to the .pt model checkpoint')
     parser.add_argument('--config', type=str,
                         default='configs/tsc/dqn_fyp_config.yaml',
                         help='YAML config used during training '
                              '(default: configs/tsc/dqn_fyp_config.yaml)')
     parser.add_argument('--scenario-dir', type=str,
-                        default='scenarios/3_intersection_corridor_TR',
+                        default='scenarios/2_intersection_corridor',
                         help='SUMO scenario directory')
 
     # Z override
