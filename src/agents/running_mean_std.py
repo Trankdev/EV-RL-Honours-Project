@@ -24,12 +24,14 @@ class RunningMeanStd:
     def update(self, x):
         """
         Updates the mean and variance using a batch of data.
+        Flattens all dimensions so shape=() scalar stats are maintained.
         """
-        batch_mean = th.mean(x, dim=0)
-        batch_var = th.var(x, dim=0,unbiased=False)
-        batch_count = x.shape[0]
+        x_flat = x.reshape(-1)  # flatten everything → 1D
+        batch_mean = th.mean(x_flat)
+        batch_var = th.var(x_flat, unbiased=False)
+        batch_count = x_flat.shape[0]
         self.update_from_moments(batch_mean, batch_var, batch_count)
-    
+        
     def update_from_moments(self, batch_mean, batch_var, batch_count):
         """
         Updates from the mean, variance and count of a batch.
