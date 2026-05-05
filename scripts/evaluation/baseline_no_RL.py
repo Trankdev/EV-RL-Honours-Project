@@ -30,14 +30,10 @@ from src.core.parlenv import PARLSumoEnv
 # Deterministic policy (REPLACES DQN)
 # =========================================================
 class FixedTimePolicy:
-    """
-    Simple round-robin switching per agent.
-    This guarantees phase changes over time.
-    """
-
-    def __init__(self, switch_every=10): # TODO: this is a hyperparameter, so make it clear it is one
+    def __init__(self, switch_every=10):
         self.switch_every = switch_every
         self.counters = {}
+        self.phases = [0, 1, 2, 3]  # ✅ ONLY valid phases
 
     def act(self, obs_dict):
         actions = {}
@@ -45,11 +41,8 @@ class FixedTimePolicy:
         for aid in obs_dict.keys():
             self.counters[aid] = self.counters.get(aid, 0) + 1
 
-            # alternate between phase 0 and 1
-            if (self.counters[aid] // self.switch_every) % 2 == 0:
-                actions[aid] = 0
-            else:
-                actions[aid] = 1
+            idx = (self.counters[aid] // self.switch_every) % len(self.phases)
+            actions[aid] = self.phases[idx]
 
         return actions
 
@@ -165,7 +158,7 @@ def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False)
     for ep in range(num_episodes):
 
         env_config = {
-            "sumo_config": "scenarios/3_intersection_corridor_TR/3_intersection_corridor_TR.sumocfg",  # IMPORTANT: your PARL wrapper builds this internally
+            "sumo_config": "scenarios/2_intersection_corridor/2_intersection_corridor.sumocfg",  # IMPORTANT: your PARL wrapper builds this internally
             "interface": "traci",
             "seed": seed + ep,
             "sync_mode": True,
@@ -179,9 +172,9 @@ def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False)
         sumo_cfg = {
             "name": "baseline",
             "dir": scenario_dir,
-            "roadnetFile": "3_intersection_corridor_TR.net.xml",
-            "flowFile": "3_intersection_corridor_TR.rou.xml", # TODO: YOU ALSO NEED TO MANUALLY CHANGE THE .SUMOCFG
-            "combined_file": "3_intersection_corridor_TR.sumocfg",
+            "roadnetFile": "2_intersection_corridor.net.xml",
+            "flowFile": "2_intersection_corridor.rou.xml", # TODO: YOU ALSO NEED TO MANUALLY CHANGE THE .SUMOCFG
+            "combined_file": "2_intersection_corridor.sumocfg",
             "gui": True, # TODO: HAVE TO CHANGE THIS VALUE TO CHANGE IF USE SUMO UI OR NOT, MAKE THIS WORK WITH A VAR.
             "no_warning": True,
             "decision_interval": 5,
@@ -197,12 +190,12 @@ def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False)
         env_config["sumo_config"] = os.path.abspath(sumo_config_path)
 
         env = PARLSumoEnv(env_config)
-        policy = FixedTimePolicy()
-
+        
+        policy = FixedTimePolicy(switch_every=args.switch_every)
+        
         print("\n================ BASELINE CONFIG ================")
-        print(f"Policy type        : FixedTimePolicy")
-        print(f"Switch interval    : {args.switch_every} decision steps")
-        print("Rule               : alternate phase 0/1 every interval")
+        print(f"Policy type        : FixedTimePolicy (round-robin)")
+        print(f"Switch interval    : {policy.switch_every} decision steps")
         print("=================================================\n")
 
         print(f"\nEpisode {ep+1}/{num_episodes}")
@@ -268,7 +261,7 @@ def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False)
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/tsc/dqn_fyp_config.yaml")
-    parser.add_argument("--scenario-dir", default="scenarios/3_intersection_corridor_TR")
+    parser.add_argument("--scenario-dir", default="scenarios/2_intersection_corridor")
     parser.add_argument("--episodes", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--gui", action="store_true")
