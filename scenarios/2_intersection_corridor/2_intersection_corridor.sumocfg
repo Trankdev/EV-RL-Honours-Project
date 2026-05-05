@@ -7,7 +7,7 @@
 
     <input>
         <net-file value="2_intersection_corridor_TR.net.xml"/>
-		<route-files value="vtypes.rou.xml,2_intersection_corridor_TR.rou.xml, ambulance_straight.rou.xml"/>
+		<route-files value="vtypes.rou.xml,2_intersection_corridor.rou.xml, ambulance_straight.rou.xml"/>
     </input>
 
 </sumoConfiguration>
