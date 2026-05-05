@@ -1,0 +1,106 @@
+<routes>
+
+    <!-- ===================================================== -->
+    <!-- Vehicle types -->
+    <!-- ===================================================== -->
+
+    <vType id="car" accel="2.6" decel="4.5" sigma="0.5"
+           length="5.0" maxSpeed="13.89" guiShape="passenger"/>
+
+    <vType id="emergency" accel="3.0" decel="5.0" sigma="0.3"
+           length="6.0" maxSpeed="25.0" vClass="emergency"
+           guiShape="emergency"/>
+
+
+
+    <!-- Entry from west into J1 -->
+    <routeDistribution id="rd_E01">
+        <route edges="E01 E12 E23" probability="0.20"/>
+        <route edges="E01 E12 E26" probability="0.20"/>
+        <route edges="E01 E12 -E92" probability="0.20"/>
+        <route edges="E01 E15" probability="0.20"/>
+        <route edges="E01 -E81" probability="0.20"/>
+    </routeDistribution>
+
+
+    <!-- Entry from south into J1 -->
+    <routeDistribution id="rd_E81">
+        <route edges="E81 E12 E23" probability="0.20"/>
+        <route edges="E81 E12 E26" probability="0.20"/>
+        <route edges="E81 E12 -E92" probability="0.20"/>
+        <route edges="E81 E15" probability="0.20"/>
+        <route edges="E81 -E01" probability="0.20"/>
+    </routeDistribution>
+
+
+    <!-- Entry from north into J1 -->
+    <routeDistribution id="rd_minus_E15">
+        <route edges="-E15 E12 E23" probability="0.20"/>
+        <route edges="-E15 E12 E26" probability="0.20"/>
+        <route edges="-E15 E12 -E92" probability="0.20"/>
+        <route edges="-E15 -E01" probability="0.20"/>
+        <route edges="-E15 -E81" probability="0.20"/>
+    </routeDistribution>
+
+
+    <!-- Entry from north into J2 -->
+    <routeDistribution id="rd_minus_E26">
+        <route edges="-E26 E23" probability="0.20"/>
+        <route edges="-E26 -E92" probability="0.20"/>
+        <route edges="-E26 -E12 -E01" probability="0.20"/>
+        <route edges="-E26 -E12 E15" probability="0.20"/>
+        <route edges="-E26 -E12 -E81" probability="0.20"/>
+    </routeDistribution>
+
+
+    <!-- Entry from south into J2 -->
+    <routeDistribution id="rd_E92">
+        <route edges="E92 E23" probability="0.20"/>
+        <route edges="E92 E26" probability="0.20"/>
+        <route edges="E92 -E12 -E01" probability="0.20"/>
+        <route edges="E92 -E12 E15" probability="0.20"/>
+        <route edges="E92 -E12 -E81" probability="0.20"/>
+    </routeDistribution>
+
+
+    <!-- Entry from east into J2 -->
+    <routeDistribution id="rd_minus_E23">
+        <route edges="-E23 E26" probability="0.20"/>
+        <route edges="-E23 -E92" probability="0.20"/>
+        <route edges="-E23 -E12 -E01" probability="0.20"/>
+        <route edges="-E23 -E12 E15" probability="0.20"/>
+        <route edges="-E23 -E12 -E81" probability="0.20"/>
+    </routeDistribution>
+
+
+    <!-- ===================================================== -->
+    <!-- Normal vehicle demand -->
+    <!-- Same demand idea: each entry road = 600 veh/hr -->
+    <!-- ===================================================== -->
+
+    <flow id="flow_E01" type="car" begin="0" end="3600"
+          vehsPerHour="600" route="rd_E01"
+          departLane="best" departSpeed="max"/>
+
+    <flow id="flow_E81" type="car" begin="0" end="3600"
+          vehsPerHour="600" route="rd_E81"
+          departLane="best" departSpeed="max"/>
+
+    <flow id="flow_minus_E15" type="car" begin="0" end="3600"
+          vehsPerHour="600" route="rd_minus_E15"
+          departLane="best" departSpeed="max"/>
+
+    <flow id="flow_minus_E26" type="car" begin="0" end="3600"
+          vehsPerHour="600" route="rd_minus_E26"
+          departLane="best" departSpeed="max"/>
+
+    <flow id="flow_E92" type="car" begin="0" end="3600"
+          vehsPerHour="600" route="rd_E92"
+          departLane="best" departSpeed="max"/>
+
+    <flow id="flow_minus_E23" type="car" begin="0" end="3600"
+          vehsPerHour="600" route="rd_minus_E23"
+          departLane="best" departSpeed="max"/>
+
+
+</routes>
