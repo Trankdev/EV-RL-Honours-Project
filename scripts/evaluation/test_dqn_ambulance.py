@@ -154,10 +154,7 @@ def test_model(
     model_path,
     config_path,
     scenario_dir,
-    K=None,
     Z=None,
-    Y=None,
-    X=None,
     num_episodes=10,
     seed=42,
     gui=False,
@@ -167,11 +164,11 @@ def test_model(
     """
     Evaluate a trained DQN-Ambulance model.
 
-    K / Z, Y, X resolution order:
-        1. CLI arguments (--K / --Z, --Y, --X)
+    Z resolution order:
+        1. CLI arguments (--Z)
         2. exp_config.json next to the model file
-        3. dqn_ambulance.yaml  ambulance.K / ambulance.Z, .Y, .X
-        4. Hard-coded defaults (0.5 / 3.0, 1.0, 1.0)
+        3. dqn_ambulance.yaml  ambulance.Z
+        4. Hard-coded defaults (1.0)
     """
     print("=" * 80)
     print("DQN-Ambulance Model Evaluation")
@@ -191,10 +188,10 @@ def test_model(
         config = yaml.safe_load(f)
 
     # ------------------------------------------------------------------
-    # Resolve K, Z, Y and X
-    # K/Z, Y, X priority: CLI > exp_config.json > YAML > hardcoded default
+    # Resolve Z
+    # Z priority: CLI > exp_config.json > YAML > hardcoded default
     # ------------------------------------------------------------------
-    exp_K, exp_Z, exp_Y, exp_X = None, None, None, None
+    exp_Z = None
     for candidate in [
         os.path.join(os.path.dirname(model_path), '..', 'exp_config.json'),
         os.path.join(os.path.dirname(model_path), 'exp_config.json'),
@@ -204,36 +201,21 @@ def test_model(
             try:
                 with open(candidate) as f:
                     exp_cfg = json.load(f)
-                exp_K = exp_cfg.get('K')
                 exp_Z = exp_cfg.get('Z')
-                exp_Y = exp_cfg.get('Y')
-                exp_X = exp_cfg.get('X')
-                print(f"Loaded K={exp_K}, Z={exp_Z}, Y={exp_Y}, X={exp_X} from {candidate}")
+                print(f"Loaded Z={exp_Z} from {candidate}")
             except Exception:
                 pass
             break
 
-    K = (K if K is not None
-         else exp_K if exp_K is not None
-         else config.get('algorithm', {}).get('ambulance', {}).get('K', 0.5))
     Z = (Z if Z is not None
          else exp_Z if exp_Z is not None
          else config.get('algorithm', {}).get('ambulance', {}).get('Z', 3.0))
-    Y = (Y if Y is not None
-         else exp_Y if exp_Y is not None
-         else config.get('algorithm', {}).get('ambulance', {}).get('Y', 1.0))
-    X = (X if X is not None
-         else exp_X if exp_X is not None
-         else config.get('algorithm', {}).get('ambulance', {}).get('X', 1.0))
 
-    print(f"Using K={K}, Z={Z}, Y={Y}, X={X}")
-    print(f"Reward formula : 50 - [(X * (reg_group1_mean + K * reg_group1_std) + Y * (reg_group2_mean + K * reg_group2_std)) + {Z}*(emg_mean + {K}*emg_std)]\n")
+    print(f"Using Z={Z}")
+    print(f"Reward formula : -sum(lane_weights * lane_queues), where lane_weights = (1 + Z/EV_norm_tta)\n")
 
-    # Inject K / Z, Y and X so the reward function uses the correct values
-    GetRewards.REWARD_CONFIGS['final_year_project_reward']['K'] = K
+    # Inject Z so the reward function uses the correct values
     GetRewards.REWARD_CONFIGS['final_year_project_reward']['Z'] = Z
-    GetRewards.REWARD_CONFIGS['final_year_project_reward']['Y'] = Y
-    GetRewards.REWARD_CONFIGS['final_year_project_reward']['X'] = X
 
     # ------------------------------------------------------------------
     # Reproducibility
@@ -403,10 +385,7 @@ def test_model(
         'config_path':           config_path,
         'algorithm':             'DQN-Ambulance',
         'algorithm_name_env':    'final_year_project_dqn',
-        'K':                     K,
         'Z':                     Z,
-        'Y':                     Y,
-        'X':                     X,
         'num_episodes':          num_episodes,
         'policy':                'greedy (epsilon=0)',
         'seed':                  seed,
@@ -459,11 +438,11 @@ Examples:
       --model-path experiments/dqn_ambulance_K0.5_Z3.0_seed42_XXXX/models/agent_final.pt \\
       --config configs/tsc/dqn_ambulance.yaml
 
-  # With GUI, custom K/Z, save results
+  # With GUI, custom Z, save results
   python scripts/evaluation/test_dqn_ambulance.py \\
       --model-path experiments/.../models/agent_episode_50.pt \\
       --config configs/tsc/dqn_ambulance.yaml \\
-      --K 0.5 --Z 5.0 --gui --num-episodes 5 \\
+      --Z 5.0 --gui --num-episodes 5 \\
       --save-results evaluations/dqn_test.json
 """)
 
@@ -478,18 +457,9 @@ Examples:
                         default='scenarios/3_intersection_corridor_TR',
                         help='SUMO scenario directory')
 
-    # K / Z override
-    parser.add_argument('--K', type=float, default=None,
-                        help='Std-penalty weight K '
-                             '(auto-detected from exp_config.json if omitted)')
+    # Z override
     parser.add_argument('--Z', type=float, default=None,
                         help='EMV penalty multiplier Z '
-                             '(auto-detected from exp_config.json if omitted)')
-    parser.add_argument('--Y', type=float, default=None,
-                        help='Group 2 penalty multiplier Y '
-                             '(auto-detected from exp_config.json if omitted)')
-    parser.add_argument('--X', type=float, default=None,
-                        help='Group 1 penalty multiplier X '
                              '(auto-detected from exp_config.json if omitted)')
 
     parser.add_argument('--num-episodes', type=int, default=2,
@@ -510,10 +480,7 @@ Examples:
         model_path=args.model_path,
         config_path=args.config,
         scenario_dir=args.scenario_dir,
-        K=args.K,
         Z=args.Z,
-        Y=args.Y,
-        X=args.X,
         num_episodes=args.num_episodes,
         seed=args.seed,
         gui=True, # force GUI

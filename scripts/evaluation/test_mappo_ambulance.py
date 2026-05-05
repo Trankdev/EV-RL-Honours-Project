@@ -5,10 +5,10 @@ train_parl_mappo_ambulance.py.
 Key differences vs test_parl_mappo.py:
   - Forces algorithm_name = "project1_std_dqn" so the environment uses the
     68-dim project1-std observation and the std-aware EMV reward.
-  - Injects K / Z into GetRewards.REWARD_CONFIGS at startup so the reward
+  - Injects Z into GetRewards.REWARD_CONFIGS at startup so the reward
     values printed match the training objective.
   - Reports per-episode reg/emg waiting-time statistics (mean + std).
-  - Reads K / Z from the saved exp_config.json (when available) so you don't
+  - Reads Z from the saved exp_config.json (when available) so you don't
     have to remember the exact values used during training.
 """
 
@@ -144,10 +144,7 @@ def test_model(
     model_path,
     config_path,
     scenario_dir,
-    K=None,
     Z=None,
-    Y=None,
-    X=None,
     num_episodes=10,
     deterministic=True,
     seed=42,
@@ -158,11 +155,11 @@ def test_model(
     """
     Evaluate a trained MAPPO-Ambulance model.
 
-    K / Z, Y and X resolution order:
-        1. CLI arguments (--K / --Z, --Y, --X)
+    Z,  resolution order:
+        1. CLI arguments (--Z)
         2. exp_config.json next to the model file
-        3. mappo_ambulance.yaml  ambulance.K / ambulance.Z, ambulance.Y, ambulance.X
-        4. Hard-coded defaults (0.5 / 3.0, 1.0, 1.0)
+        3. mappo_ambulance.yaml  ambulance.Z
+        4. Hard-coded defaults (1.0)
     """
     print("=" * 80)
     print("MAPPO-Ambulance Model Evaluation")
@@ -182,11 +179,11 @@ def test_model(
         config = yaml.safe_load(f)
 
     # ------------------------------------------------------------------
-    # Resolve K, Z, Y and X
-    # K/Z, Y, X priority: CLI > exp_config.json > YAML > hardcoded default
+    # Resolve Z
+    # Z priority: CLI > exp_config.json > YAML > hardcoded default
     # ------------------------------------------------------------------
     # Try reading from exp_config.json saved next to / above the model
-    exp_K, exp_Z, exp_Y, exp_X = None, None, None, None
+    exp_Z = None
     for candidate in [
         os.path.join(os.path.dirname(model_path), '..', 'exp_config.json'),
         os.path.join(os.path.dirname(model_path), 'exp_config.json'),
@@ -196,36 +193,21 @@ def test_model(
             try:
                 with open(candidate) as f:
                     exp_cfg = json.load(f)
-                exp_K = exp_cfg.get('K')
                 exp_Z = exp_cfg.get('Z')
-                exp_Y = exp_cfg.get('Y')
-                exp_X = exp_cfg.get('X')
-                print(f"Loaded K={exp_K}, Z={exp_Z}, Y={exp_Y}, X={exp_X} from {candidate}")
+                print(f"Loaded Z={exp_Z} from {candidate}")
             except Exception:
                 pass
             break
 
-    K = (K if K is not None
-         else exp_K if exp_K is not None
-         else config.get('algorithm', {}).get('ambulance', {}).get('K', 0.5))
     Z = (Z if Z is not None
          else exp_Z if exp_Z is not None
          else config.get('algorithm', {}).get('ambulance', {}).get('Z', 3.0))
-    Y = (Y if Y is not None
-         else exp_Y if exp_Y is not None
-         else config.get('algorithm', {}).get('ambulance', {}).get('Y', 1.0))
-    X = (X if X is not None
-         else exp_X if exp_X is not None
-         else config.get('algorithm', {}).get('ambulance', {}).get('X', 1.0))
 
-    print(f"Using K={K}, Z={Z}, Y={Y}, X={X}")
-    print(f"Reward formula : 50 - [(X * (reg_group1_mean + K * reg_group1_std) + Y * (reg_group2_mean + K * reg_group2_std)) + {Z}*(emg_mean + {K}*emg_std)]\n")
+    print(f"Using Z={Z}")
+    print(f"Reward formula : -sum(lane_weights * lane_queues) # new reward function, where lane_weights = (1 + Z/EV_norm_tta)\n")
 
-    # Inject K / Z, Y and X so the reward function uses the correct values
-    GetRewards.REWARD_CONFIGS['final_year_project_reward']['K'] = K 
+    # Inject Z so the reward function uses the correct values
     GetRewards.REWARD_CONFIGS['final_year_project_reward']['Z'] = Z 
-    GetRewards.REWARD_CONFIGS['final_year_project_reward']['Y'] = Y
-    GetRewards.REWARD_CONFIGS['final_year_project_reward']['X'] = X
 
     # ------------------------------------------------------------------
     # Reproducibility
@@ -388,10 +370,7 @@ def test_model(
         'model_path':            model_path,
         'config_path':           config_path,
         'algorithm_name_env':    'final_year_project_dqn',
-        'K':                     K,
         'Z':                     Z,
-        'Y':                     Y,
-        'X':                     X,
         'num_episodes':          num_episodes,
         'deterministic':         deterministic,
         'seed':                  seed,
@@ -444,11 +423,11 @@ Examples:
       --model-path experiments/mappo_ambulance_K0.5_Z3.0_seed42_XXXX/models/agent_final.pt \\
       --config configs/tsc/mappo_ambulance.yaml
 
-  # With GUI, custom K/Z, save results
+  # With GUI, custom Z, save results
   python scripts/evaluation/test_mappo_ambulance.py \\
       --model-path experiments/.../models/agent_final.pt \\
       --config configs/tsc/mappo_ambulance.yaml \\
-      --K 0.5 --Z 5.0 --gui --num-episodes 5 \\
+      --Z 5.0 --gui --num-episodes 5 \\
       --save-results evaluations/my_test.json
 """)
 
@@ -463,16 +442,9 @@ Examples:
                         default='scenarios/3_intersection_corridor_TR', # change to scenario to be tested on
                         help='SUMO scenario directory')
 
-    # K / Z, Y and X override
-    parser.add_argument('--K', type=float, default=None,
-                        help='Std-penalty weight K (auto-detected from exp_config.json if omitted)')
+    # Z override
     parser.add_argument('--Z', type=float, default=None,
                         help='EMV penalty multiplier Z (auto-detected from exp_config.json if omitted)')
-    parser.add_argument('--Y', type=float, default=None,
-                        help='Group 1 penalty multiplier Y (auto-detected from exp_config.json if omitted)')
-    parser.add_argument('--X', type=float, default=None,
-                        help='Group 1 penalty multiplier X (auto-detected from exp_config.json if omitted)')
-    
 
     parser.add_argument('--num-episodes', type=int, default=2,
                         help='Number of test episodes (default: 2)')
@@ -493,10 +465,7 @@ Examples:
         model_path=args.model_path,
         config_path=args.config,
         scenario_dir=args.scenario_dir,
-        K=args.K,
         Z=args.Z,
-        Y=args.Y,
-        X=args.X,
         num_episodes=args.num_episodes,
         deterministic=not args.stochastic,
         seed=args.seed,
