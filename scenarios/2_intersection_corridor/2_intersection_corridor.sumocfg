@@ -6,7 +6,7 @@
 <sumoConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
 
     <input>
-        <net-file value="2_intersection_corridor_TR.net.xml"/>
+        <net-file value="2_intersection_corridor.net.xml"/>
 		<route-files value="vtypes.rou.xml,2_intersection_corridor.rou.xml, ambulance_straight.rou.xml"/>
     </input>
 
