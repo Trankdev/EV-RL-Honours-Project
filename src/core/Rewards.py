@@ -566,7 +566,9 @@ class GetRewards(ObservationFunction):
     def _compute_project1_std_reward(self) -> float: # TODO: rename this and fix all calls to this to reflect FYP better
         """
         Final year project reward
-    
+        
+        reward = - np.sum(np.array(lane_weights) * np.array(lane_queues))
+        
         Where:
             - Z: emergency vehicle penalty multiplier (default 1.0)
     
@@ -578,110 +580,83 @@ class GetRewards(ObservationFunction):
         base_reward = config['base_reward'] # TODO: look into how this works
         ambulance_type_ids = config['ambulance_type_ids']
         
-        # ========== 1. collect waiting time distribution from all observed lanes ==========
-        regular_group1_waiting_times = [] # regular vehicles in group 1
-        regular_group2_waiting_times = [] # regular vehicles in group 2
-        emergency_waiting_times = []  # emergency vehicles
-        
         eng = self.world.eng
         
+        # --- STEP 1: Detect EV ---
         EV_present = False
         EV_lane_id = None
         EV_position = None
-        
-        # iterate over all observed lanes
+        EV_id = None
+    
         for road_lanes in self.lanes_road_observed:
             for lane_id in road_lanes:
                 try:
-                    # get all vehicles on lane
                     vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
-                    
-                    # Check if EV is present - this could probably be improved cuz rn it only works for 1 EV
                     for veh_id in vehicle_ids:
-                        veh_type = eng.vehicle.getTypeID(veh_id)
-                        if veh_type in ambulance_type_ids:
+                        if eng.vehicle.getTypeID(veh_id) in ambulance_type_ids:
                             EV_present = True
                             EV_lane_id = eng.vehicle.getLaneID(veh_id)
                             EV_position = eng.vehicle.getLanePosition(veh_id)
+                            EV_id = veh_id
                             break
-                        
-                    
-                    for veh_id in vehicle_ids:
-                        try:
-                            # Get accumulated waiting time
-                            waiting_time = eng.vehicle.getAccumulatedWaitingTime(veh_id)
-                            
-                            # Determine vehicle type
-                            veh_type = eng.vehicle.getTypeID(veh_id)
-                            
-                            if veh_type in ambulance_type_ids:
-                                # Emergency vehicle
-                                emergency_waiting_times.append(waiting_time)
-                            else:
-                                # TODO: could make this interval based - so only happens every so often
-                                if EV_present == True and lane_id == EV_lane_id:
-                                    veh_position = eng.vehicle.getLanePosition(veh_id) 
-                                    if veh_position > EV_position:
-                                        regular_group1_waiting_times.append(waiting_time) # Group 1 - EV blocking
-                                    
-                                    else:
-                                        regular_group2_waiting_times.append(waiting_time)
-                                
-                                else:
-                                    regular_group2_waiting_times.append(waiting_time)
-                        
-                        except Exception as e:
-                            # Skip vehicles with failed data retrieval
-                            continue
-                
-                except Exception as e:
-                    # Skip lanes with errors
+                    if EV_present:
+                        break
+                except:
                     continue
-        
-        # ========== 2. Compute statistics for regular vehicles ==========
-        if len(regular_group1_waiting_times) > 0:
-            reg_group1_mean = float(np.mean(regular_group1_waiting_times))
-            reg_group1_std = float(np.std(regular_group1_waiting_times))
-        else:
-            # no regular group 1 vehicles, set to 0 (ideal state)
-            reg_group1_mean = 0.0
-            reg_group1_std = 0.0
-            
-        if len(regular_group2_waiting_times) > 0:
-            reg_group2_mean = float(np.mean(regular_group2_waiting_times))
-            reg_group2_std = float(np.std(regular_group2_waiting_times))
-        else:
-            # no regular group 2 vehicles, set to 0 (ideal state)
-            reg_group2_mean = 0.0
-            reg_group2_std = 0.0
-        
-        # ========== 3. Compute statistics for emergency vehicles ==========
-        if len(emergency_waiting_times) > 0:
-            emg_mean = float(np.mean(emergency_waiting_times))
-            emg_std = float(np.std(emergency_waiting_times))
-        else:
-            # No emergency vehicles
-            emg_mean = 0.0
-            emg_std = 0.0
-        
-        # ========== 4. Compute reward (fully aligned with formula) ==========
-        reward = base_reward - ( # TODO: look into how this works
-            X * (reg_group1_mean + K * reg_group1_std) + 
-            Y * (reg_group2_mean + K * reg_group2_std) +
-            Z * (emg_mean + K * emg_std)
-        )
+            if EV_present:
+                break
+    
+        # --- STEP 2: Compute lane queues + weights ---
+        lane_queues = []
+        lane_weights = []
+    
+        eps = 1e-6
+        max_weight = 50.0  # TODO: refine this tuning - prevents explosion
+        max_tta = 30.0    # TODO: tune this - FOR NORMALISATION
+    
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    q_i = eng.lane.getLastStepHaltingNumber(lane_id)
+    
+                    w_i = 1.0
+    
+                    if EV_present and lane_id == EV_lane_id:
+                        lane_length = eng.lane.getLength(lane_id)
+                        dist_to_stop = lane_length - EV_position
+    
+                        EV_speed = eng.vehicle.getSpeed(EV_id)
+                        EV_speed = max(EV_speed, 1e-3)
+    
+                        EV_tta = dist_to_stop / EV_speed
+                        EV_tta_norm = min(EV_tta / max_tta, 1.0)
+    
+                        w_i = 1 + Z / max(EV_tta_norm, eps)
+                        w_i = min(w_i, max_weight)
+    
+                    lane_queues.append(q_i)
+                    lane_weights.append(w_i)
+    
+                except:
+                    continue
+    
+        # --- STEP 3: Compute reward ---
+        lane_queues = np.array(lane_queues)
+        lane_weights = np.array(lane_weights)
+    
+        total_weighted_queue = np.sum(lane_weights * lane_queues)
+        reward = -total_weighted_queue
         
         # ========== 5. Optional debugging info ==========
         # Uncomment if debugging is needed
         # if hasattr(self.world, '_debug_reward_stats'):
         #     self.world._debug_reward_stats = {
-        #         'reg_mean': reg_mean, - would need to change this
-        #         'reg_std': reg_std, - would need to change this
-        #         'emg_mean': emg_mean,
-        #         'emg_std': emg_std,
-        #         'reward': reward,
-        #         'num_regular': len(regular_waiting_times), - would need to change this
-        #         'num_emergency': len(emergency_waiting_times)
+        #         'lane_queues': lane_queues.tolist(),
+        #         'lane_weights': lane_weights.tolist(),
+        #         'total_weighted_queue': float(total_weighted_queue),
+        #         'reward': float(reward),
+        #         'EV_present': EV_present,
+        #         'EV_lane_id': EV_lane_id,
         #     }
         
         return float(reward)
@@ -703,73 +678,82 @@ class GetRewards(ObservationFunction):
         # Use provided or default parameters
         Z = Z if Z is not None else config['Z']
         
-        base_reward = config['base_reward']
+        base_reward = config['base_reward'] # I dont think this does anything lol, but could break potentially?
         ambulance_type_ids = config['ambulance_type_ids']
-        
-        # Collect waiting times
-        regular_group1_waiting_times = []
-        regular_group2_waiting_times = []
-        emergency_waiting_times = []
         
         eng = self.world.eng
         
+        # --- STEP 1: Detect EV (separate pass) ---
         EV_present = False
         EV_lane_id = None
         EV_position = None
+        EV_id = None
         
         for road_lanes in self.lanes_road_observed:
             for lane_id in road_lanes:
                 try:
                     vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
-                    
-                    # Check if EV is present - this could probably be improved cuz rn it only works for 1 EV
                     for veh_id in vehicle_ids:
-                        veh_type = eng.vehicle.getTypeID(veh_id)
-                        if veh_type in ambulance_type_ids:
+                        if eng.vehicle.getTypeID(veh_id) in ambulance_type_ids:
                             EV_present = True
                             EV_lane_id = eng.vehicle.getLaneID(veh_id)
                             EV_position = eng.vehicle.getLanePosition(veh_id)
+                            EV_id = veh_id
                             break
-                        
-                        
-                    for veh_id in vehicle_ids:
-                        try:
-                            waiting_time = eng.vehicle.getAccumulatedWaitingTime(veh_id)
-                            veh_type = eng.vehicle.getTypeID(veh_id)
-                            
-                            if veh_type in ambulance_type_ids:
-                                emergency_waiting_times.append(waiting_time)
-                            else:
-                                # TODO: could make this interval based - so only happens every so often
-                                if EV_present == True and lane_id == EV_lane_id:
-                                    veh_position = eng.vehicle.getLanePosition(veh_id) 
-                                    if veh_position > EV_position:
-                                        regular_group1_waiting_times.append(waiting_time) # Group 1 - EV blocking
-                                    
-                                    else:
-                                        regular_group2_waiting_times.append(waiting_time)
-                                
-                                else:
-                                    regular_group2_waiting_times.append(waiting_time)
-                        except:
-                            continue
+                    if EV_present:
+                        break
                 except:
                     continue
+            if EV_present:
+                break
         
-        # Compute statistics
-        reg_group1_mean = float(np.mean(regular_group1_waiting_times)) if len(regular_group1_waiting_times) > 0 else 0.0
-        reg_group1_std = float(np.std(regular_group1_waiting_times)) if len(regular_group1_waiting_times) > 0 else 0.0
-        reg_group2_mean = float(np.mean(regular_group2_waiting_times)) if len(regular_group2_waiting_times) > 0 else 0.0
-        reg_group2_std = float(np.std(regular_group2_waiting_times)) if len(regular_group2_waiting_times) > 0 else 0.0
-        emg_mean = float(np.mean(emergency_waiting_times)) if len(emergency_waiting_times) > 0 else 0.0
-        emg_std = float(np.std(emergency_waiting_times)) if len(emergency_waiting_times) > 0 else 0.0
-        
-        # Compute reward
-        reward = base_reward - ( # TODO: update to new reward function
-            X * (reg_group1_mean + K * reg_group1_std) + 
-            Y * (reg_group2_mean + K * reg_group2_std) +
-            Z * (emg_mean + K * emg_std)
-        )
+            # --- STEP 2: Compute lane queues + weights ---
+        lane_queues = []
+        lane_weights = []
+    
+        eps = 1e-6
+        max_weight = 50.0  # TODO: refine this tuning - prevents explosion
+        max_tta = 30.0    # TODO: tune this - FOR NORMALISATION
+    
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    # Queue length = halting vehicles
+                    q_i = eng.lane.getLastStepHaltingNumber(lane_id)
+    
+                    # Default weight
+                    w_i = 1.0
+    
+                    # EV weighting (only for EV lane)
+                    if EV_present and lane_id == EV_lane_id:
+                        lane_length = eng.lane.getLength(lane_id)
+                        dist_to_stop = lane_length - EV_position
+    
+                        EV_speed = eng.vehicle.getSpeed(EV_id)
+                        EV_speed = max(EV_speed, 1e-3)
+    
+                        EV_tta = dist_to_stop / EV_speed
+    
+                        # Normalise TTA
+                        EV_tta_norm = min(EV_tta / max_tta, 1.0)
+    
+                        # Compute weight (stable)
+                        w_i = 1 + Z / max(EV_tta_norm, eps)
+                        w_i = min(w_i, max_weight)
+    
+                    lane_queues.append(q_i)
+                    lane_weights.append(w_i)
+    
+                except:
+                    continue
+                
+        # --- STEP 3: Compute reward ---
+        lane_queues = np.array(lane_queues)
+        lane_weights = np.array(lane_weights)
+    
+        total_weighted_queue = np.sum(lane_weights * lane_queues)
+        reward = -total_weighted_queue
+
         
         return float(reward)
 
@@ -830,22 +814,32 @@ class GetRewards(ObservationFunction):
         eng = self.world.eng
         
         
-        # assumes only 1 EV present at a time for now and is restricted to same lane only
-        # TODO: make this not break for multiple EV scenario
+        # assumes only 1 EV present at a time for now
+        # TODO: make this not break for multiple EV scenario  
         EV_present = False
         EV_lane_id = None
         EV_position = None
         EV_id = None # this only works for one/the first detected EV at the moment...
-        div_error_avoider = 1e-6
         
-        #for veh_id in eng.vehicle.getIDList():
-            #veh_type = eng.vehicle.getTypeID(veh_id)
-
-            #if veh_type in ambulance_type_ids:
-                #EV_present = True
-                #EV_lane_id = eng.vehicle.getLaneID(veh_id)
-                #EV_position = eng.vehicle.getLanePosition(veh_id)
-                #break
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+                    for veh_id in vehicle_ids:
+                        if eng.vehicle.getTypeID(veh_id) in ambulance_type_ids:
+                            EV_present = True
+                            EV_lane_id = eng.vehicle.getLaneID(veh_id)
+                            EV_position = eng.vehicle.getLanePosition(veh_id)
+                            EV_id = veh_id
+                            break
+                    if EV_present:
+                        break
+                except:
+                    continue
+            if EV_present:
+                break
+            
+        div_error_avoider = 1e-6
         
         for road_lanes in self.lanes_road_observed:
             for lane_id in road_lanes:
@@ -857,15 +851,6 @@ class GetRewards(ObservationFunction):
                     
                     # Default lane weighting factor
                     w_i = 1.0
-                    
-                    for veh_id in vehicle_ids:
-                        veh_type = eng.vehicle.getTypeID(veh_id)
-                        if veh_type in ambulance_type_ids:
-                            EV_present = True
-                            EV_lane_id = eng.vehicle.getLaneID(veh_id)
-                            EV_position = eng.vehicle.getLanePosition(veh_id)
-                            EV_id = veh_id
-                            break
                         
                     # If EV is in this lane -> Compute EV_tta
                     if EV_present == True and lane_id == EV_lane_id:
@@ -877,13 +862,17 @@ class GetRewards(ObservationFunction):
                         EV_speed = eng.vehicle.getSpeed(EV_id)
                         EV_speed = max(EV_speed, 1e-3)
                         
-                        EV_tta = dist_to_stop / EV_speed # TODO: need to normalise EV tta
+                        EV_tta = dist_to_stop / EV_speed
                         
-                        # OPTIONAL: normalise TTA (important)
-                        #max_tta = 30.0  # tune this
-                        #EV_tta_norm = min(EV_tta / max_tta, 1.0)
+                        # normalise TTA (important)
+                        max_tta = 30.0  # TODO: refine this tuning
+                        EV_tta_norm = min(EV_tta / max_tta, 1.0)
                         
-                        w_i = 1 + Z / max(EV_tta, div_error_avoider)
+                        w_i = 1 + Z / max(EV_tta_norm, div_error_avoider)
+                        
+                        # to avoid explosion of wi
+                        max_weight = 50.0 # TODO: refine this tuning
+                        w_i = min(w_i, max_weight)
                     
                     lane_queues.append(q_i)
                     lane_weights.append(w_i)
@@ -939,30 +928,17 @@ class GetRewards(ObservationFunction):
             }
         }
         
-        # OLD REWARD IDEA WE HAD utilizing two groups and EV
-        # Compute reward components
-        #reg_group1_mean = stats['regular_group1_vehicles']['mean_waiting']
-        #reg_group1_std = stats['regular_group1_vehicles']['std_waiting']
-        #reg_group2_mean = stats['regular_group2_vehicles']['mean_waiting']
-        #reg_group2_std = stats['regular_group2_vehicles']['std_waiting']
-        #emg_mean = stats['emergency_vehicles']['mean_waiting']
-        #emg_std = stats['emergency_vehicles']['std_waiting']
+        # new reward function (sum of wi * qi)
+        lane_queues = np.array(lane_queues)
+        lane_weights = np.array(lane_weights)
         
-        
-        # OLD REWARD IDEA WE HAD utilizing two groups and EV
-        #regular_group1_penalty = X * (reg_group1_mean + K * reg_group1_std) 
-        #regular_group2_penalty = Y * (reg_group2_mean + K * reg_group2_std)
-        #total_regular_penalty = regular_group1_penalty + regular_group2_penalty 
-
-        #emergency_penalty = Z * (emg_mean + K * emg_std) 
-        #total_reward = base_reward - total_regular_penalty - emergency_penalty 
-        
-        reward = - np.sum(np.array(lane_weights) * np.array(lane_queues))
+        total_weighted_queue = np.sum(lane_weights * lane_queues)
+        reward = -total_weighted_queue
         
         stats['reward_components'] = {
             'lane_queues': lane_queues,
             'lane_weights': lane_weights,
-            'total_weighted_queue': float(np.sum(np.array(lane_weights) * np.array(lane_queues))),
+            'total_weighted_queue': float(total_weighted_queue),
             'total_reward': float(reward),
             'Z': Z,
         }
