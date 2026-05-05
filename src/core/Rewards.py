@@ -577,7 +577,7 @@ class GetRewards(ObservationFunction):
         """
         config = self.REWARD_CONFIGS['final_year_project_reward'] # TODO: look into how this works
         Z = config['Z']
-        base_reward = config['base_reward'] # TODO: look into how this works
+        #base_reward = config['base_reward'] 
         ambulance_type_ids = config['ambulance_type_ids']
         
         eng = self.world.eng
@@ -678,7 +678,7 @@ class GetRewards(ObservationFunction):
         # Use provided or default parameters
         Z = Z if Z is not None else config['Z']
         
-        base_reward = config['base_reward'] # I dont think this does anything lol, but could break potentially?
+        #base_reward = config['base_reward'] # I dont think this does anything lol, but could break potentially?
         ambulance_type_ids = config['ambulance_type_ids']
         
         eng = self.world.eng

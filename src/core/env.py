@@ -1412,33 +1412,37 @@ class World(parse_sumo_config, gym.Env):
         # self.vehicle_trajectory, self.vehicle_maxspeed = self.get_vehicle_trajectory()
 
     def step_sim_until_time_to_act(self):
+        #print("DEBUG: step_sim_until_time_to_act v2")  # ← add this
+
         time_to_act = False
         
         while not time_to_act:
             if self.step_counter >= self.sim_max_steps:
-                print(f"DEBUG: Reached sim_max_steps={self.sim_max_steps}, force exiting loop")
+                #print(f"DEBUG: Reached sim_max_steps={self.sim_max_steps}, force exiting loop")
                 break
             self.eng.simulationStep()            
             self.step_counter += 1
-            self.step_sim_and_statistics() # accumulate rewards
-            for i, intersection in enumerate(self.intersections): # check if there is a intersection that needs to act
-                
-                # self.intersection.update()
+            self.step_sim_and_statistics()
+    
+            # First pass: update ALL intersections' timers and yellow transitions
+            for intersection in self.intersections:
                 intersection.time_since_last_phase_change += 1
                 if intersection.is_yellow and intersection.time_since_last_phase_change == intersection.yellow_phase_time:
-                    # self.sumo.trafficlight.setPhase(self.id, self.green_phase)
-                    self.eng.trafficlight.setRedYellowGreenState(intersection.id, intersection.all_phases[intersection.green_phase].state)
-                    intersection.is_yellow = False                
-                # ✨ Determine whether a decision is needed based on mode
-                if self.sync_mode:
-                    # Synchronous mode: check if all agents are ready to act
-                    if all(intsec.time_to_act for intsec in self.intersections):
-                        time_to_act = True
-                        break
-                else:
-                    # Asynchronous mode: any agent needing to act is sufficient
-                    if intersection.time_to_act:
-                        time_to_act = True
+                    #print(f"DEBUG YELLOW END: {intersection.id} at sim_time={self.get_current_time():.1f}, time_since_change={intersection.time_since_last_phase_change}")
+
+                    self.eng.trafficlight.setRedYellowGreenState(
+                        intersection.id, 
+                        intersection.all_phases[intersection.green_phase].state)
+                    intersection.is_yellow = False
+                    intersection.time_since_last_phase_change = 0
+    
+            # Second pass: check if it's time to act (separate so break doesn't skip updates)
+            if self.sync_mode:
+                if all(intsec.time_to_act for intsec in self.intersections):
+                    time_to_act = True
+            else:
+                if any(intsec.time_to_act for intsec in self.intersections):
+                    time_to_act = True
         
     def reset(self):
         '''
@@ -1613,28 +1617,33 @@ class World(parse_sumo_config, gym.Env):
         all_agents = set(agents_that_acted) | set(newly_acting_agents)
         dones = {tl: False for tl in all_agents}
         dones["__all__"] = self.step_counter >= self.sim_max_steps
+        
         # 🔑 Debug info
         if dones["__all__"]:
-            # Count decisions per agent
             decision_counts = {tl: self.id2intersection[tl].action_count for tl in self.traffic_light_ids}
-            
             total_decisions = sum(decision_counts.values())
             avg_decisions = total_decisions / len(self.traffic_light_ids)
-            theoretical_decisions = len(self.traffic_light_ids) * ((self.step_counter-300)//5) # decision_interval
-            
+        
             if self.sync_mode:
-                # Synchronous mode stats
                 theoretical_decisions = (self.step_counter - 300) // 5
                 print(f"   Mode: synchronous")
                 print(f"   Decisions per agent: {avg_decisions:.0f}")
                 print(f"   Theoretical decisions: {theoretical_decisions}")
             else:
-                # Asynchronous mode stats
                 theoretical_decisions_total = len(self.traffic_light_ids) * ((self.step_counter - 300) // 5)
                 print(f"   Mode: asynchronous")
                 print(f"   Total actual decisions: {total_decisions}")
                 print(f"   Total theoretical decisions: {theoretical_decisions_total}")
                 print(f"   Average per agent: {avg_decisions:.1f}")
+        
+        # Force all agents to be included in final step so obs/rewards are always complete
+        if dones["__all__"]:
+            newly_acting_agents = list(self.traffic_light_ids)
+        else:
+            newly_acting_agents = [
+                tl for tl in self.traffic_light_ids
+                if self.id2intersection[tl].time_to_act
+            ]
             # ========== ✅ Add SUMO statistics ==========
 
         # info
@@ -1908,7 +1917,6 @@ class Intersection():
         self.min_green = world.get_min_green()
         self.action_count = 0  # track actual number of decisions
 
-
         # Get static information from pre-parsed data (completed in parse_sumo_config.__init__)
         # if hasattr(world, 'traffic_light_info') and id in world.traffic_light_info:
         # 使用静态预解析的数据
@@ -2083,44 +2091,30 @@ class Intersection():
     @property
     def time_to_act(self):
         """Returns True if the traffic signal should act in the current step."""
-        return self.world_current_time() == self.next_action_time
+        return self.world_current_time() >= self.next_action_time
 
     def pseudo_step(self, action):
-        '''
-        pseudo_step
-        Take relative actions and calculate time duration of current phase.
-        
-        :param action: the changes to take
-        :return: None
-        '''
-        self.action_count += 1  # track number of decisions
-        # 执行action后重置累积器
+        self.next_action_time = float('inf')
+        self.action_count += 1
         self.accumulated_reward_since_last_action = 0
-        self.steps_since_action = 0  # reset step counter
+        self.steps_since_action = 0
         
-        if self.is_yellow and self.time_since_last_phase_change == self.yellow_phase_time: # yellow phase takeover transition
-            self.eng.trafficlight.setRedYellowGreenState(self.id, self.all_phases[action].state)
-            self.next_action_time = self.world_current_time() + self.decision_interval
-            self.is_yellow = False
-            self.time_since_last_phase_change = 0
-            
-            self.green_phase = action
-            return action
+        # is_yellow is always False here (yellow already ended in step_sim_until_time_to_act)
+        #if self.green_phase == action or self.time_since_last_phase_change < self.min_green:
+        if self.green_phase == action or self.time_since_last_phase_change <= self.min_green:
 
-        elif self.green_phase == action or self.time_since_last_phase_change < self.min_green:
             self.eng.trafficlight.setRedYellowGreenState(self.id, self.all_phases[self.green_phase].state)
             self.next_action_time = self.world_current_time() + self.decision_interval
             return self.green_phase
-
-        elif self.green_phase != action:
-            self.eng.trafficlight.setRedYellowGreenState(self.id,self.all_phases[self.yellow_dict[(self.green_phase, action)]].state)
+    
+        else:  # green_phase != action and min_green satisfied
+            #print(f"DEBUG YELLOW START: {self.id} at sim_time={self.world_current_time():.1f}, switching {self.green_phase}->{action}")
+            self.eng.trafficlight.setRedYellowGreenState(
+                self.id, self.all_phases[self.yellow_dict[(self.green_phase, action)]].state)
             self.green_phase = action
-            # set next decision time depending on mode
-            if self.world.sync_mode:
-                # synchronous mode: only add decision interval (ignore yellow duration)
-                self.next_action_time = self.world_current_time() + self.decision_interval
-            else:
-                self.next_action_time = self.world_current_time() + self.yellow_phase_time + self.decision_interval
+            self.next_action_time = (self.world_current_time() 
+                                     + self.yellow_phase_time 
+                                     + self.decision_interval)
             self.is_yellow = True
             self.time_since_last_phase_change = 0
             return action
