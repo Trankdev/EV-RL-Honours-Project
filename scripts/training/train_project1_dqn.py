@@ -25,6 +25,9 @@ import torch
 import parl
 from parl.utils import ReplayMemory
 
+# for plotting training improvements over time/episodes
+import matplotlib.pyplot as plt
+
 # ---------------------------------------------------------
 # Force working directory to project root (two levels up)
 # ---------------------------------------------------------
@@ -543,12 +546,49 @@ def main():
     print(f"   Final epsilon     : {agent.epsilon:.4f}")
     print(f"   Total time        : {elapsed_h:.2f} hours")
     print(f"{'='*70}\n")
+    
+    # ------------------------------------------------------------------
+    # Plot training progress
+    # ------------------------------------------------------------------
+    episodes = [x['episode'] for x in training_log]
+    rewards  = [x['avg_reward'] for x in training_log]
+    
+    plt.figure(figsize=(10, 5))
+    plt.plot(episodes, rewards, label='Average Reward')
+    
+    # Optional moving average smoothing
+    window = 20
+    if len(rewards) >= window:
+        moving_avg = np.convolve(
+            rewards,
+            np.ones(window) / window,
+            mode='valid'
+        )
+        plt.plot(
+            episodes[window - 1:],
+            moving_avg,
+            label=f'{window}-Episode Moving Average',
+            linewidth=2
+        )
+    
+    plt.xlabel('Episode')
+    plt.ylabel('Average Reward')
+    plt.title('DQN Training Progress')
+    plt.grid(True)
+    plt.legend()
+    
+    reward_plot_path = os.path.join(log_save_dir, 'reward_curve.png')
+    plt.savefig(reward_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Saved reward curve to: {reward_plot_path}")
 
     sys.stdout.flush()
     sys.stderr.flush()
     log_file_handle.close()
 
     env.close()
+    
 
 
 if __name__ == '__main__':
