@@ -1,7 +1,7 @@
 """
 MAPPO training script for emergency vehicle priority traffic signal control.
 
-Observation / reward aligned with train_project1_dqn.py:
+Observation / reward aligned with train_project1_dqn.py: - HAVEN'T' UPDATED THIS STRING FOR FYP
   - Observation : 68-dim project1_std vector
       [phase_onehot(N)  +  12 lanes × 5 features]
       per-lane features: vehicle_count/17, avg_wait/100, wait_std/100 ⭐,
@@ -127,7 +127,7 @@ def run_episode(env, agent, obs_dim, train=True):
     else:
         train_stats = {}
 
-    # Episode-level averages of reward statistics
+    # Episode-level averages of reward statistics - NEW: this is actually just the evaluation metrics now
     if stat_steps > 0:
         reward_stats = {
             'reg_waiting_mean': ep_reg_mean_sum / stat_steps,
@@ -158,7 +158,7 @@ def run_episode(env, agent, obs_dim, train=True):
 # SUMO config builder
 # ============================================================================
 
-def create_sumo_config(scenario_dir, config_dir, gui=False):
+def create_sumo_config(scenario_dir, config_dir, gui=False): # TODO: Set gui=False for fast training, Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
     """Create the SUMO config JSON file for the experiment."""
     os.makedirs(config_dir, exist_ok=True)
 
@@ -168,7 +168,7 @@ def create_sumo_config(scenario_dir, config_dir, gui=False):
         "roadnetFile": "2_intersection_corridor.net.xml",
         "flowFile": "vtypes.rou.xml,2_intersection_corridor.rou.xml,ambulance.rou.xml",
         "combined_file": "2_intersection_corridor.sumocfg",
-        "gui": gui,
+        "gui": gui, # TODO: Set "gui" = gui, Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
         "no_warning": True,
         "decision_interval": 5,
         "min_green": 5,
@@ -191,8 +191,8 @@ def main():
         description='Train MAPPO agent with project1-style EMV-aware obs+reward')
 
     # Config / scenario
-    parser.add_argument('--config', type=str, default='mappo_ambulance',
-                        help='Config name in configs/tsc/ (default: mappo_ambulance)')
+    parser.add_argument('--config', type=str, default='mappo_fyp_config', # mappo_ambulance for BASELINE, mappo_fyp_config for FYP
+                        help='Config name in configs/tsc/ (default: mappo_ambulance)') # TODO: does this need changing?
     parser.add_argument('--scenario-dir', type=str,
                         default='scenarios/2_intersection_corridor', # change this when using different scenarios
                         help='SUMO scenario directory')
@@ -279,7 +279,7 @@ def main():
     # ------------------------------------------------------------------
     # Build SUMO config
     # ------------------------------------------------------------------
-    sumo_config_path = create_sumo_config(args.scenario_dir, configs_save_dir, gui=False)
+    sumo_config_path = create_sumo_config(args.scenario_dir, configs_save_dir, gui=False) # TODO: set GUI to false for fast training - Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
     print(f"SUMO config    : {sumo_config_path}\n")
 
     # ------------------------------------------------------------------
@@ -298,7 +298,7 @@ def main():
         "obs_to_subscribe":      config['algorithm']['observation']['obs_to_subscribe'],
         "reward_to_subscribe":   config['algorithm']['reward']['reward_to_subscribe'],
         # Activates project1-style observation AND reward routing
-        "algorithm_name":        "project1_std_dqn",
+        "algorithm_name":        "final_year_project_dqn", # TODO: change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
         "normalize_observation": config['algorithm']['observation'].get('normalize', False),
         "norm_params":           config['algorithm']['observation'].get('norm_params', {}),
         "reward_weights":        config['algorithm']['reward'].get('reward_weights', [1.0]),
@@ -456,7 +456,7 @@ def main():
         'config_path':       config_path,
         'exp_dir':           exp_dir,
         'algorithm':         'MAPPO-Ambulance',
-        'algorithm_name_env': 'project1_std_dqn',
+        'algorithm_name_env': 'final_year_project_dqn', # TODO: change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
         'obs_dim':           obs_dim,
         'pretrained_model':  args.load_model if args.load_model else None,
         'start_episode':     start_episode,
