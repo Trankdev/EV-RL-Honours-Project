@@ -557,10 +557,10 @@ class parse_sumo_config(): # Does static information extraction affect parallel 
             )
         if 'final_year_project' in algorithm_name.lower() or 'fyp' in algorithm_name.lower():
             # Dynamic format: phase(N_phases) + N_in_lanes × 5 features # TODO: change to be what we end up picking
-            # Number of lanes is determined by the network, not hardcoded as 12
+            # Number of lanes is determined by the network, not hardcoded
             num_phases   = len(self.green_phases[tl_id])
             num_in_lanes = sum(len(lanes) for lanes in tl_info['lanes_road_observed_in_only'])
-            ob_length    = num_phases + num_in_lanes * 5 # TODO: will need to adjust to match observation space length
+            ob_length    = num_phases + num_in_lanes * 6 # TODO: will need to adjust to match observation space length
 
             return gym.spaces.Box(
                 low=np.zeros(ob_length, dtype=np.float32),
@@ -936,6 +936,7 @@ class World(parse_sumo_config, gym.Env):
         # ==================every vehicle's dynamic statistics/individual level=================
         self.vehicles_entering_time = dict()
         self.vehicles_trip_time = dict() # vehicle_id: time_in_simulation
+        self.ev_lane_entry_time = {}  # {veh_id: (lane_id, entry_time)} - NEW FROM FYP
         # # test generate observation information
         self.vehicle_trajectory = {}
         self.vehicle_maxspeed = {}
@@ -1403,6 +1404,29 @@ class World(parse_sumo_config, gym.Env):
             # else:
             #     print(f"Warning: No entry time recorded for vehicle {v}")
             # self.vehicles_trip_time.update({v: self.get_current_time() - self.vehicles_entering_time[v]})
+        
+        # NEW FOR FYP
+        # Track EV lane entry times for delay ratio computation
+        current_time = self.get_current_time()
+        for veh_id in self.eng.vehicle.getIDList():
+            try:
+                veh_type = self.eng.vehicle.getTypeID(veh_id)
+                if veh_type not in ['ambulance_type', 'emergency']:
+                    continue
+                current_lane = self.eng.vehicle.getLaneID(veh_id)
+                if not current_lane or current_lane.startswith(':'): # not sure why it does the 'or' bit here??
+                    # Skip internal junction lanes
+                    continue
+                if veh_id not in self.ev_lane_entry_time:
+                    self.ev_lane_entry_time[veh_id] = (current_lane, current_time)
+                else:
+                    stored_lane, entry_time = self.ev_lane_entry_time[veh_id]
+                    if current_lane != stored_lane:
+                        self.ev_lane_entry_time[veh_id] = (current_lane, current_time)
+            except Exception:
+                print("something went wrong with EV delay ratio computation in env.py - world - step_sim_and_statistics")
+                continue
+            
         # world system level statistics
         self.num_arrived_vehicles += self.eng.simulation.getArrivedNumber() # total number of vehicles that have arrived in the world
         self.num_departed_vehicles += self.eng.simulation.getDepartedNumber() # total number of vehicles that have departed in the world
@@ -1459,6 +1483,7 @@ class World(parse_sumo_config, gym.Env):
         # =============================================
 
         self.vehicles_trip_time = dict()
+        self.ev_lane_entry_time = {} # {veh_id: (lane_id, entry_time)} - NEW FOR FYP
         self.vehicles_entering_time = dict()
         # TODO: check when to close traci
         if self.interface_flag:

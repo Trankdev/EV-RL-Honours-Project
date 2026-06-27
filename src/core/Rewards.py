@@ -610,9 +610,9 @@ class GetRewards(ObservationFunction):
         lane_queues = []
         lane_weights = []
     
-        eps = 1e-6
-        max_weight = 50.0  # TODO: refine this tuning - prevents explosion
-        max_tta = 30.0    # TODO: tune this - FOR NORMALISATION
+        eps = 1e-4
+        max_weight = 75.0  # TODO: refine this tuning - prevents explosion
+        max_tta = 60.0    # TODO: tune this - FOR NORMALISATION
     
         for road_lanes in self.lanes_road_observed:
             for lane_id in road_lanes:
@@ -711,9 +711,9 @@ class GetRewards(ObservationFunction):
         lane_queues = []
         lane_weights = []
     
-        eps = 1e-6
-        max_weight = 50.0  # TODO: refine this tuning - prevents explosion
-        max_tta = 30.0    # TODO: tune this - FOR NORMALISATION
+        eps = 1e-4 # to avoid divide by zero error
+        max_weight = 75.0  # TODO: refine this tuning - prevents explosion
+        max_tta = 60.0    # TODO: tune this - FOR NORMALISATION
     
         for road_lanes in self.lanes_road_observed:
             for lane_id in road_lanes:
@@ -839,7 +839,9 @@ class GetRewards(ObservationFunction):
             if EV_present:
                 break
             
-        div_error_avoider = 1e-6
+        div_error_avoider = 1e-4
+        max_weight = 75.0  # TODO: refine this tuning - prevents explosion
+        max_tta = 60.0    # TODO: tune this - FOR NORMALISATION
         
         for road_lanes in self.lanes_road_observed:
             for lane_id in road_lanes:
@@ -865,13 +867,11 @@ class GetRewards(ObservationFunction):
                         EV_tta = dist_to_stop / EV_speed
                         
                         # normalise TTA (important)
-                        max_tta = 30.0  # TODO: refine this tuning
                         EV_tta_norm = min(EV_tta / max_tta, 1.0)
                         
                         w_i = 1 + Z / max(EV_tta_norm, div_error_avoider)
                         
                         # to avoid explosion of wi
-                        max_weight = 50.0 # TODO: refine this tuning
                         w_i = min(w_i, max_weight)
                     
                     lane_queues.append(q_i)
@@ -942,6 +942,17 @@ class GetRewards(ObservationFunction):
             'total_reward': float(reward),
             'Z': Z,
         }
+        
+        # Combined regular vehicle stats for backward compatibility with training script
+        all_regular = regular_group1_waiting_times + regular_group2_waiting_times
+        stats['regular_vehicles'] = {
+            'count': len(all_regular),
+            'mean_waiting': float(np.mean(all_regular)) if all_regular else 0.0,
+            'std_waiting': float(np.std(all_regular)) if all_regular else 0.0,
+            'max_waiting': float(np.max(all_regular)) if all_regular else 0.0,
+            'min_waiting': float(np.min(all_regular)) if all_regular else 0.0,
+        }
+        
         return stats
 
 
