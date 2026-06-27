@@ -1,6 +1,6 @@
 """
 Evaluation script for MAPPO-Ambulance models trained with
-train_parl_mappo_ambulance.py.
+train_parl_mappo_ambulance.py. - NOT UPDATED FOR FYP
 
 Key differences vs test_parl_mappo.py:
   - Forces algorithm_name = "project1_std_dqn" so the environment uses the
@@ -248,7 +248,7 @@ def test_model(
         "sync_mode":             True,
         "obs_to_subscribe":      config['algorithm']['observation']['obs_to_subscribe'],
         "reward_to_subscribe":   config['algorithm']['reward']['reward_to_subscribe'],
-        "algorithm_name":        "final_year_project_dqn",   # activates fyp state observation and reward
+        "algorithm_name":        "final_year_project_dqn",   # TODO: change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
         "normalize_observation": config['algorithm']['observation'].get('normalize', False),
         "norm_params":           config['algorithm']['observation'].get('norm_params', {}),
         "reward_weights":        config['algorithm']['reward'].get('reward_weights', [1.0]),
@@ -369,7 +369,7 @@ def test_model(
     summary = {
         'model_path':            model_path,
         'config_path':           config_path,
-        'algorithm_name_env':    'final_year_project_dqn',
+        'algorithm_name_env':    'final_year_project_dqn', # TODO: change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
         'Z':                     Z,
         'num_episodes':          num_episodes,
         'deterministic':         deterministic,
@@ -430,9 +430,10 @@ Examples:
       --Z 5.0 --gui --num-episodes 5 \\
       --save-results evaluations/my_test.json
 """)
-
+    
+    # TODO: Change this top arguments default '' to change the trained model that is being used
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/old_reward_mappo_ambulance_K0.5_Z3.0_seed42_20260505_180759/models/agent_final.pt',
+                        default='experiments/*insert_model_folder_name*/models/agent_final.pt',
                         help='Path to the .pt model checkpoint')
     
     parser.add_argument('--config', type=str,
