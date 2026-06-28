@@ -1,0 +1,1042 @@
+"""rewards for traffic signals."""
+
+import numpy as np
+from .Observations import ObservationFunction
+
+
+class GetRewards(ObservationFunction):
+    """Reward function class for traffic signals."""
+
+    REWARD_CONFIGS = {
+        'lane_waiting_count': {
+            'description': 'Number of waiting vehicles per lane',
+            'level': 'lane',
+            'use_difference': False,
+            'negative': True,
+            'scale': 1.0,
+            'clip_range': None
+        },
+        'lane_waiting_time_count': {
+            'description': 'Total waiting time per lane',
+            'level': 'lane',
+            'use_difference': False,
+            'negative': True,
+            'scale': 1.0,
+            'clip_range': None
+        },
+        'lane_vehicle_count': {
+            'description': 'Total number of vehicles per lane',
+            'level': 'lane',
+            'use_difference': False,
+            'negative': False,
+            'scale': 1.0,
+            'clip_range': None
+        },
+        'avg_waiting_time_per_vehicle': {
+            'description': 'Average waiting time per vehicle',
+            'level': 'intersection',
+            'use_difference': False,
+            'negative': True,
+            'scale': 1.0,
+            'clip_range': (-10.0, 0.0)
+        },
+        'pressure': {
+            'description': 'Pressure reward',
+            'level': 'intersection',
+            'negative': True,
+            'scale': 1.0,
+        },
+        'emergency_vehicle_priority': {
+            'description': 'Priority rewards for ambulances',
+            'level': 'intersection',
+            'negative': True,
+            'civilian_weight': 0.7,
+            'ambulance_penalty': 5000,
+            'ambulance_speed_threshold': 1.0,
+            'ambulance_type_id': 'ambulance_type',
+            'scale': 1.0,
+            'clip_range': None
+        },
+
+        # Keep this key for compatibility with your existing code.
+        'project1_std_reward': {
+            'description': 'v7 balanced FYP reward',
+            'level': 'intersection',
+            'negative': False,
+            'K': 0.5,
+            'Z': 1.0,
+            'base_reward': 50.0,
+            'scale': 1.0,
+            'clip_range': None,
+            'ambulance_type_ids': ['ambulance_type', 'emergency']
+        },
+
+        # Main FYP reward config.
+        'final_year_project_reward': {
+            'description': 'v7 FYP reward: EV priority + smoother civilian recovery + regular speed reward',
+            'level': 'intersection',
+            'negative': False,
+
+            'K': 0.5,
+            'Z': 1.0,
+            'Y': 1.0,
+            'X': 1.0,
+            'base_reward': 50.0,
+            'scale': 1.0,
+            'clip_range': None,
+            'ambulance_type_ids': ['ambulance_type', 'emergency'],
+
+            # EV time-to-arrival weighting.
+            'max_tta': 30.0,
+            'eps': 1e-6,
+            'max_weight': 10.0,
+
+            # 13.89 m/s = 50 km/h.
+            'speed_norm': 13.89,
+
+            # Per-step reward clipping.
+            # This is clipped per timestep. Episode total/average printed by your
+            # script can still be much larger or smaller because it sums many steps.
+            'reward_clip_min': -20.0,
+            'reward_clip_max': 12.0,
+
+            # Positive reward terms.
+            # Compared with v6, EV movement is strengthened again because v6 made
+            # EMV trip time worse than v5.
+            'ev_clear_reward_weight': 7.5,
+            'ev_speed_reward_weight': 4.0,
+            'normal_flow_reward_weight': 3.0,
+            'regular_speed_reward_weight': 3.0,
+
+            # EV / Group 1 cost terms.
+            'front_vehicle_cost_weight': 3.0,
+            'front_halting_cost_weight': 6.0,
+            'emergency_wait_cost_weight': 6.0,
+            'group1_wait_cost_weight': 2.5,
+            'ev_slow_cost_weight': 2.5,
+
+            # Civilian / Group 2 cost terms.
+            # These are relaxed from v6 because v6 reduced Group 2 wait but made
+            # civilian trip time worse. The excess-wait term still prevents Group 2
+            # wait from returning to the v5 value of ~74s.
+            'group2_wait_cost_weight': 1.4,
+            'group2_std_cost_weight': 0.45,
+            'group2_excess_wait_cost_weight': 0.8,
+            'group2_target_wait': 35.0,
+            'halting_per_lane_cost_weight': 1.3,
+            'occupancy_per_lane_cost_weight': 0.30,
+
+            # Civilian recovery multiplier.
+            # Reduced from v6 1.8 to avoid over-correcting away from EV service.
+            'civilian_multiplier_max': 1.4,
+
+            # Normalisation constants.
+            'wait_norm': 30.0,
+            'ev_wait_norm': 10.0,
+            'std_norm': 30.0,
+            'halting_norm': 5.0,
+            'occupancy_norm': 10.0,
+        },
+    }
+
+    def __init__(self, ts, world, reward_to_subscribe, in_only=True, negative=True):
+        super().__init__(ts, world)
+
+        self.lanes_road_observed = []
+
+        if in_only:
+            roads = self.ts.in_roads
+        else:
+            roads = self.ts.roads
+
+        for r in roads:
+            if not self.world.RIGHT:
+                tmp = sorted(
+                    self.ts.road_lane_mapping[r],
+                    key=lambda ob: int(ob[-1]),
+                    reverse=True
+                )
+            else:
+                tmp = sorted(
+                    self.ts.road_lane_mapping[r],
+                    key=lambda ob: int(ob[-1])
+                )
+
+            self.lanes_road_observed.append(tmp)
+
+        if 'emergency_vehicle_priority' in reward_to_subscribe:
+            self.world.subscribe(['lane_waiting_time_count'])
+        else:
+            self.world.subscribe(reward_to_subscribe)
+
+        self.fns_subscribed = reward_to_subscribe
+        self.negative = negative
+        self.algorithm_name = getattr(world, '_algorithm_name', 'default')
+        self.last_rewards = {fn: None for fn in self.fns_subscribed}
+
+    def _compute_emergency_priority_reward(self):
+        """Existing emergency priority reward."""
+        config = self.REWARD_CONFIGS['emergency_vehicle_priority']
+
+        waiting_time_result = self.world.info_dynamics_real_time.get(
+            'lane_waiting_time_count',
+            {}
+        )
+
+        civilian_penalty = 0.0
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                civilian_penalty += waiting_time_result.get(lane_id, 0.0)
+
+        ambulance_penalty = 0.0
+
+        try:
+            eng = self.world.eng
+            vehicle_list = eng.vehicle.getIDList()
+
+            ambulance_type = config['ambulance_type_id']
+            speed_threshold = config['ambulance_speed_threshold']
+            penalty_value = config['ambulance_penalty']
+
+            for veh_id in vehicle_list:
+                try:
+                    veh_type = eng.vehicle.getTypeID(veh_id)
+
+                    if veh_type == ambulance_type:
+                        speed = eng.vehicle.getSpeed(veh_id)
+
+                        if speed < speed_threshold:
+                            ambulance_penalty += penalty_value
+
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+
+        civilian_weight = config['civilian_weight']
+        raw_value = (civilian_penalty * civilian_weight) + ambulance_penalty
+        reward = -raw_value / config.get('scale', 1.0)
+
+        return float(reward)
+
+    def compute_reward(self) -> float:
+        """Main reward selector."""
+
+        # FYP / Project1 / std-DQN special case.
+        if (
+            'project1' in self.algorithm_name.lower()
+            or 'std_dqn' in self.algorithm_name.lower()
+            or 'final_year_project' in self.algorithm_name.lower()
+            or 'fyp' in self.algorithm_name.lower()
+        ):
+            return self._compute_project1_std_reward()
+
+        # Emergency priority special case.
+        if 'emergency_vehicle_priority' in self.fns_subscribed:
+            return self._compute_emergency_priority_reward()
+
+        subscribed_results = [
+            self.world.info_dynamics_real_time[fn]
+            for fn in self.fns_subscribed
+        ]
+
+        # MA2C special handling.
+        if 'ma2c' in self.algorithm_name.lower():
+            reward_weights = getattr(self.world, '_reward_weights', [1.0, 0.2])
+            reward_scale = getattr(self.world, '_reward_scale', 2000.0)
+            reward_clip_range = getattr(
+                self.world,
+                '_reward_clip_range',
+                [-2.0, 2.0]
+            )
+
+            reward_components = []
+
+            for i, fn_name in enumerate(self.fns_subscribed):
+                result = subscribed_results[i]
+
+                fn_result = []
+
+                for road_lanes in self.lanes_road_observed:
+                    road_result = [
+                        result.get(lane_id, 0.0)
+                        if hasattr(result, 'get')
+                        else result[lane_id]
+                        for lane_id in road_lanes
+                    ]
+                    fn_result.extend(road_result)
+
+                raw_value = np.sum(fn_result)
+                reward_components.append(-raw_value)
+
+            weighted_reward = sum(
+                w * r for w, r in zip(reward_weights, reward_components)
+            )
+
+            normalized_reward = weighted_reward / reward_scale
+
+            if reward_clip_range:
+                clipped_reward = np.clip(
+                    normalized_reward,
+                    reward_clip_range[0],
+                    reward_clip_range[1]
+                )
+            else:
+                clipped_reward = normalized_reward
+
+            return float(clipped_reward)
+
+        # Default reward mode.
+        reward_components = []
+
+        for i, fn_name in enumerate(self.fns_subscribed):
+            result = subscribed_results[i]
+            config = self.REWARD_CONFIGS[fn_name]
+
+            if fn_name == 'pressure':
+                raw_value = result[self.ts.id]
+
+            elif fn_name in [
+                'lane_waiting_count',
+                'lane_waiting_time_count',
+                'lane_vehicle_count'
+            ]:
+                fn_result = []
+
+                for road_lanes in self.lanes_road_observed:
+                    road_result = [
+                        result.get(lane_id, 0.0)
+                        if hasattr(result, 'get')
+                        else result[lane_id]
+                        for lane_id in road_lanes
+                    ]
+
+                    fn_result.append(np.sum(road_result))
+
+                raw_value = np.sum(fn_result)
+
+            elif fn_name == 'emergency_vehicle_priority':
+                waiting_time_result = self.world.info_dynamics_real_time.get(
+                    'lane_waiting_time_count',
+                    {}
+                )
+
+                civilian_penalty = 0.0
+
+                for road_lanes in self.lanes_road_observed:
+                    for lane_id in road_lanes:
+                        civilian_penalty += waiting_time_result.get(lane_id, 0.0)
+
+                ambulance_penalty = 0.0
+                eng = self.world.eng
+                vehicle_list = eng.vehicle.getIDList()
+
+                ambulance_type = config['ambulance_type_id']
+                speed_threshold = config['ambulance_speed_threshold']
+                penalty_value = config['ambulance_penalty']
+
+                for veh_id in vehicle_list:
+                    try:
+                        veh_type = eng.vehicle.getTypeID(veh_id)
+
+                        if veh_type == ambulance_type:
+                            speed = eng.vehicle.getSpeed(veh_id)
+
+                            if speed < speed_threshold:
+                                ambulance_penalty += penalty_value
+
+                    except Exception:
+                        pass
+
+                civilian_weight = config['civilian_weight']
+                raw_value = (civilian_penalty * civilian_weight) + ambulance_penalty
+
+            else:
+                raise ValueError(f"Unknown reward type: {fn_name}")
+
+            value = -raw_value if config['negative'] else raw_value
+            value = value / config['scale']
+
+            if config.get('clip_range'):
+                value = np.clip(
+                    value,
+                    config['clip_range'][0],
+                    config['clip_range'][1]
+                )
+
+            reward_components.append(value)
+
+        return float(reward_components[0])
+
+    ###########################################################################
+    # FYP reward helpers
+    ###########################################################################
+
+    def _detect_emergency_vehicle(self, ambulance_type_ids):
+        """Detect first emergency vehicle observed by this intersection."""
+        eng = self.world.eng
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+
+                    for veh_id in vehicle_ids:
+                        try:
+                            veh_type = eng.vehicle.getTypeID(veh_id)
+
+                            if veh_type in ambulance_type_ids:
+                                return {
+                                    'id': veh_id,
+                                    'lane_id': eng.vehicle.getLaneID(veh_id),
+                                    'position': eng.vehicle.getLanePosition(veh_id),
+                                    'speed': eng.vehicle.getSpeed(veh_id),
+                                    'road_lanes': road_lanes,
+                                }
+
+                        except Exception:
+                            continue
+
+                except Exception:
+                    continue
+
+        return None
+
+    def _safe_mean(self, values):
+        if len(values) == 0:
+            return 0.0
+        return float(np.mean(values))
+
+    def _safe_std(self, values):
+        if len(values) == 0:
+            return 0.0
+        return float(np.std(values))
+
+    def _compute_fyp_v7_reward_components(self, Z=None):
+        """
+        v7 FYP reward.
+
+        Main change from v6:
+            - v6 reduced Group 2 wait, but made civilian trip time and EMV trip time worse.
+            - v7 relaxes Group 2 pressure slightly.
+            - v7 adds a regular-speed reward to help civilian trip time.
+            - v7 strengthens EV movement again to recover EMV trip time.
+        """
+
+        config = self.REWARD_CONFIGS['final_year_project_reward']
+
+        Z = Z if Z is not None else config.get('Z', 1.0)
+        ambulance_type_ids = config.get(
+            'ambulance_type_ids',
+            ['ambulance_type', 'emergency']
+        )
+
+        max_tta = config.get('max_tta', 30.0)
+        eps = config.get('eps', 1e-6)
+        max_weight = config.get('max_weight', 10.0)
+        speed_norm = config.get('speed_norm', 13.89)
+
+        reward_clip_min = config.get('reward_clip_min', -20.0)
+        reward_clip_max = config.get('reward_clip_max', 12.0)
+
+        ev_clear_reward_weight = config.get('ev_clear_reward_weight', 7.5)
+        ev_speed_reward_weight = config.get('ev_speed_reward_weight', 4.0)
+        normal_flow_reward_weight = config.get('normal_flow_reward_weight', 3.0)
+        regular_speed_reward_weight = config.get('regular_speed_reward_weight', 3.0)
+
+        front_vehicle_cost_weight = config.get('front_vehicle_cost_weight', 3.0)
+        front_halting_cost_weight = config.get('front_halting_cost_weight', 6.0)
+        emergency_wait_cost_weight = config.get('emergency_wait_cost_weight', 6.0)
+        group1_wait_cost_weight = config.get('group1_wait_cost_weight', 2.5)
+        ev_slow_cost_weight = config.get('ev_slow_cost_weight', 2.5)
+
+        group2_wait_cost_weight = config.get('group2_wait_cost_weight', 1.4)
+        group2_std_cost_weight = config.get('group2_std_cost_weight', 0.45)
+        group2_excess_wait_cost_weight = config.get('group2_excess_wait_cost_weight', 0.8)
+        group2_target_wait = config.get('group2_target_wait', 35.0)
+        halting_per_lane_cost_weight = config.get('halting_per_lane_cost_weight', 1.3)
+        occupancy_per_lane_cost_weight = config.get('occupancy_per_lane_cost_weight', 0.30)
+        civilian_multiplier_max = config.get('civilian_multiplier_max', 1.4)
+
+        wait_norm = config.get('wait_norm', 30.0)
+        ev_wait_norm = config.get('ev_wait_norm', 10.0)
+        std_norm = config.get('std_norm', 30.0)
+        halting_norm = config.get('halting_norm', 5.0)
+        occupancy_norm = config.get('occupancy_norm', 10.0)
+
+        eng = self.world.eng
+
+        # Step 1: detect EV.
+        ev_info = self._detect_emergency_vehicle(ambulance_type_ids)
+        EV_present = ev_info is not None
+
+        EV_id = ev_info['id'] if EV_present else None
+        EV_lane_id = ev_info['lane_id'] if EV_present else None
+        EV_position = ev_info['position'] if EV_present else None
+        EV_speed = max(ev_info['speed'], 0.0) if EV_present else 0.0
+
+        # Step 2: EV time-to-arrival weight.
+        EV_tta = None
+        EV_tta_norm = 1.0
+        EV_weight = 1.0
+
+        if EV_present:
+            try:
+                lane_length = eng.lane.getLength(EV_lane_id)
+                dist_to_stop = max(lane_length - EV_position, 0.0)
+
+                speed_for_tta = max(EV_speed, 1e-3)
+                EV_tta = dist_to_stop / speed_for_tta
+
+                EV_tta_norm = min(EV_tta / max_tta, 1.0)
+
+                EV_weight = 1.0 + Z / max(EV_tta_norm, eps)
+                EV_weight = min(EV_weight, max_weight)
+
+            except Exception:
+                EV_tta = None
+                EV_tta_norm = 1.0
+                EV_weight = 1.0
+
+        # Step 3: collect traffic state.
+        regular_group1_waiting_times = []
+        regular_group2_waiting_times = []
+        emergency_waiting_times = []
+        regular_speeds = []
+        group2_speeds = []
+
+        lane_queues = []
+        lane_weights = []
+        road_vehicle_counts = []
+
+        total_vehicle_count = 0
+        total_halting_count = 0
+        total_lane_count = 0
+
+        ev_front_vehicle_count = 0
+        ev_front_halting_count = 0
+
+        for road_lanes in self.lanes_road_observed:
+            road_vehicle_count = 0
+
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+                    road_vehicle_count += len(vehicle_ids)
+                except Exception:
+                    continue
+
+            road_vehicle_counts.append(road_vehicle_count)
+
+            # Debug value kept for compatibility.
+            road_q = 1.0 / (1.0 + road_vehicle_count)
+
+            for lane_id in road_lanes:
+                total_lane_count += 1
+
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+                    total_vehicle_count += len(vehicle_ids)
+
+                    try:
+                        lane_halting = eng.lane.getLastStepHaltingNumber(lane_id)
+                    except Exception:
+                        lane_halting = 0
+
+                    total_halting_count += lane_halting
+
+                    current_lane_weight = (
+                        EV_weight if (EV_present and lane_id == EV_lane_id) else 1.0
+                    )
+
+                    lane_weights.append(current_lane_weight)
+                    lane_queues.append(road_q)
+
+                    for veh_id in vehicle_ids:
+                        try:
+                            veh_type = eng.vehicle.getTypeID(veh_id)
+                            veh_speed = eng.vehicle.getSpeed(veh_id)
+                            waiting_time = eng.vehicle.getAccumulatedWaitingTime(veh_id)
+
+                            if veh_type in ambulance_type_ids:
+                                emergency_waiting_times.append(waiting_time)
+                                continue
+
+                            regular_speeds.append(veh_speed)
+
+                            if EV_present and lane_id == EV_lane_id:
+                                veh_position = eng.vehicle.getLanePosition(veh_id)
+
+                                # Group 1 = normal vehicles in front of EV.
+                                if veh_position > EV_position:
+                                    ev_front_vehicle_count += 1
+                                    regular_group1_waiting_times.append(waiting_time)
+
+                                    if veh_speed < 0.1:
+                                        ev_front_halting_count += 1
+
+                                else:
+                                    regular_group2_waiting_times.append(waiting_time)
+                                    group2_speeds.append(veh_speed)
+
+                            else:
+                                regular_group2_waiting_times.append(waiting_time)
+                                group2_speeds.append(veh_speed)
+
+                        except Exception:
+                            continue
+
+                except Exception:
+                    continue
+
+        # Step 4: stable metrics.
+        group1_wait_mean = self._safe_mean(regular_group1_waiting_times)
+        group2_wait_mean = self._safe_mean(regular_group2_waiting_times)
+        emergency_wait_mean = self._safe_mean(emergency_waiting_times)
+
+        group1_wait_std = self._safe_std(regular_group1_waiting_times)
+        group2_wait_std = self._safe_std(regular_group2_waiting_times)
+        emergency_wait_std = self._safe_std(emergency_waiting_times)
+
+        regular_speed_mean = self._safe_mean(regular_speeds)
+        group2_speed_mean = self._safe_mean(group2_speeds)
+
+        halting_per_lane = total_halting_count / max(total_lane_count, 1)
+        occupancy_per_lane = total_vehicle_count / max(total_lane_count, 1)
+
+        ev_speed_score = min(EV_speed / speed_norm, 1.0) if EV_present else 0.0
+        regular_speed_score = min(regular_speed_mean / speed_norm, 1.0)
+        group2_speed_score = min(group2_speed_mean / speed_norm, 1.0)
+
+        if EV_present:
+            ev_clearance_score = 1.0 / (
+                1.0
+                + ev_front_vehicle_count
+                + 2.0 * ev_front_halting_count
+            )
+        else:
+            ev_clearance_score = 0.0
+
+        normal_flow_score = 1.0 / (
+            1.0
+            + group2_wait_mean / wait_norm
+            + group2_wait_std / std_norm
+            + halting_per_lane / halting_norm
+            + occupancy_per_lane / occupancy_norm
+        )
+
+        # Civilian multiplier: high when EV is not urgent.
+        # This only changes civilian terms. It does not reduce EV reward terms.
+        if EV_present:
+            ev_block_level = min(
+                (ev_front_vehicle_count + 2.0 * ev_front_halting_count) / 5.0,
+                1.0
+            )
+            ev_wait_level = min(emergency_wait_mean / ev_wait_norm, 1.0)
+            ev_slow_level = 1.0 - ev_speed_score
+            ev_tta_level = (
+                (EV_weight - 1.0) / max(max_weight - 1.0, eps)
+                if max_weight > 1.0 else 0.0
+            )
+
+            ev_urgency = (
+                0.45 * ev_block_level
+                + 0.30 * ev_wait_level
+                + 0.20 * ev_slow_level
+                + 0.05 * ev_tta_level
+            )
+            ev_urgency = float(np.clip(ev_urgency, 0.0, 1.0))
+        else:
+            ev_block_level = 0.0
+            ev_wait_level = 0.0
+            ev_slow_level = 0.0
+            ev_tta_level = 0.0
+            ev_urgency = 0.0
+
+        civilian_multiplier = 1.0 + (civilian_multiplier_max - 1.0) * (1.0 - ev_urgency)
+        civilian_multiplier = float(np.clip(civilian_multiplier, 1.0, civilian_multiplier_max))
+
+        # Step 5: positive rewards.
+        if EV_present:
+            ev_clear_reward = (
+                ev_clear_reward_weight
+                * EV_weight
+                * ev_clearance_score
+            )
+
+            ev_speed_reward = (
+                ev_speed_reward_weight
+                * ev_speed_score
+            )
+        else:
+            ev_clear_reward = 0.0
+            ev_speed_reward = 0.0
+
+        normal_flow_reward = (
+            normal_flow_reward_weight
+            * civilian_multiplier
+            * normal_flow_score
+        )
+
+        regular_speed_reward = (
+            regular_speed_reward_weight
+            * civilian_multiplier
+            * regular_speed_score
+        )
+
+        # Step 6: costs.
+        if EV_present:
+            front_vehicle_cost = (
+                front_vehicle_cost_weight
+                * EV_weight
+                * ev_front_vehicle_count
+            )
+
+            front_halting_cost = (
+                front_halting_cost_weight
+                * EV_weight
+                * ev_front_halting_count
+            )
+
+            emergency_wait_cost = (
+                emergency_wait_cost_weight
+                * EV_weight
+                * (emergency_wait_mean / ev_wait_norm)
+            )
+
+            group1_wait_cost = (
+                group1_wait_cost_weight
+                * EV_weight
+                * (group1_wait_mean / ev_wait_norm)
+            )
+
+            ev_slow_cost = (
+                ev_slow_cost_weight
+                * (1.0 - ev_speed_score)
+            )
+        else:
+            front_vehicle_cost = 0.0
+            front_halting_cost = 0.0
+            emergency_wait_cost = 0.0
+            group1_wait_cost = 0.0
+            ev_slow_cost = 0.0
+
+        group2_excess_wait = max(group2_wait_mean - group2_target_wait, 0.0)
+
+        group2_wait_cost = (
+            civilian_multiplier
+            * group2_wait_cost_weight
+            * (group2_wait_mean / wait_norm)
+        )
+
+        group2_std_cost = (
+            civilian_multiplier
+            * group2_std_cost_weight
+            * (group2_wait_std / std_norm)
+        )
+
+        group2_excess_wait_cost = (
+            civilian_multiplier
+            * group2_excess_wait_cost_weight
+            * (group2_excess_wait / wait_norm)
+        )
+
+        halting_per_lane_cost = (
+            civilian_multiplier
+            * halting_per_lane_cost_weight
+            * (halting_per_lane / halting_norm)
+        )
+
+        occupancy_per_lane_cost = (
+            civilian_multiplier
+            * occupancy_per_lane_cost_weight
+            * (occupancy_per_lane / occupancy_norm)
+        )
+
+        raw_reward = (
+            ev_clear_reward
+            + ev_speed_reward
+            + normal_flow_reward
+            + regular_speed_reward
+            - front_vehicle_cost
+            - front_halting_cost
+            - emergency_wait_cost
+            - group1_wait_cost
+            - ev_slow_cost
+            - group2_wait_cost
+            - group2_std_cost
+            - group2_excess_wait_cost
+            - halting_per_lane_cost
+            - occupancy_per_lane_cost
+        )
+
+        reward = float(np.clip(raw_reward, reward_clip_min, reward_clip_max))
+
+        lane_queues_arr = np.array(lane_queues)
+        lane_weights_arr = np.array(lane_weights)
+
+        if len(lane_queues_arr) > 0:
+            total_weighted_queue = float(np.sum(lane_weights_arr * lane_queues_arr))
+        else:
+            total_weighted_queue = 0.0
+
+        return {
+            'reward': reward,
+            'raw_reward': float(raw_reward),
+
+            'EV_present': EV_present,
+            'EV_id': EV_id,
+            'EV_lane_id': EV_lane_id,
+            'EV_position': EV_position,
+            'EV_speed': float(EV_speed),
+            'EV_tta': float(EV_tta) if EV_tta is not None else None,
+            'EV_tta_norm': float(EV_tta_norm),
+            'EV_weight': float(EV_weight),
+
+            'ev_block_level': float(ev_block_level),
+            'ev_wait_level': float(ev_wait_level),
+            'ev_slow_level': float(ev_slow_level),
+            'ev_tta_level': float(ev_tta_level),
+            'ev_urgency': float(ev_urgency),
+            'civilian_multiplier': float(civilian_multiplier),
+
+            'ev_front_vehicle_count': int(ev_front_vehicle_count),
+            'ev_front_halting_count': int(ev_front_halting_count),
+
+            'total_vehicle_count': int(total_vehicle_count),
+            'total_halting_count': int(total_halting_count),
+            'total_lane_count': int(total_lane_count),
+            'halting_per_lane': float(halting_per_lane),
+            'occupancy_per_lane': float(occupancy_per_lane),
+
+            'group1_wait_mean': float(group1_wait_mean),
+            'group2_wait_mean': float(group2_wait_mean),
+            'emergency_wait_mean': float(emergency_wait_mean),
+            'group1_wait_std': float(group1_wait_std),
+            'group2_wait_std': float(group2_wait_std),
+            'emergency_wait_std': float(emergency_wait_std),
+            'group2_excess_wait': float(group2_excess_wait),
+
+            'regular_speed_mean': float(regular_speed_mean),
+            'group2_speed_mean': float(group2_speed_mean),
+
+            'ev_clearance_score': float(ev_clearance_score),
+            'ev_speed_score': float(ev_speed_score),
+            'regular_speed_score': float(regular_speed_score),
+            'group2_speed_score': float(group2_speed_score),
+            'normal_flow_score': float(normal_flow_score),
+
+            'ev_clear_reward': float(ev_clear_reward),
+            'ev_speed_reward': float(ev_speed_reward),
+            'normal_flow_reward': float(normal_flow_reward),
+            'regular_speed_reward': float(regular_speed_reward),
+
+            'front_vehicle_cost': float(front_vehicle_cost),
+            'front_halting_cost': float(front_halting_cost),
+            'emergency_wait_cost': float(emergency_wait_cost),
+            'group1_wait_cost': float(group1_wait_cost),
+            'ev_slow_cost': float(ev_slow_cost),
+            'group2_wait_cost': float(group2_wait_cost),
+            'group2_std_cost': float(group2_std_cost),
+            'group2_excess_wait_cost': float(group2_excess_wait_cost),
+            'halting_per_lane_cost': float(halting_per_lane_cost),
+            'occupancy_per_lane_cost': float(occupancy_per_lane_cost),
+
+            # Older names kept for compatibility.
+            'ev_clearance_reward': float(ev_clear_reward),
+            'ev_speed_reward': float(ev_speed_reward),
+            'normal_traffic_reward': float(normal_flow_reward),
+            'front_vehicle_penalty': float(front_vehicle_cost),
+            'front_halting_penalty': float(front_halting_cost),
+            'emergency_wait_penalty': float(emergency_wait_cost),
+            'group1_wait_penalty': float(group1_wait_cost),
+            'group2_wait_penalty': float(group2_wait_cost),
+            'group2_std_penalty': float(group2_std_cost),
+            'group2_excess_wait_penalty': float(group2_excess_wait_cost),
+            'halting_per_lane_penalty': float(halting_per_lane_cost),
+            'occupancy_per_lane_penalty': float(occupancy_per_lane_cost),
+
+            'regular_group1_waiting_times': regular_group1_waiting_times,
+            'regular_group2_waiting_times': regular_group2_waiting_times,
+            'emergency_waiting_times': emergency_waiting_times,
+            'regular_speeds': regular_speeds,
+            'group2_speeds': group2_speeds,
+
+            'lane_queues': lane_queues_arr,
+            'lane_weights': lane_weights_arr,
+            'road_vehicle_counts': np.array(road_vehicle_counts),
+
+            'total_weighted_queue': total_weighted_queue,
+            'Z': Z,
+        }
+
+    def _compute_project1_std_reward(self) -> float:
+        """
+        v7 final year project reward.
+
+        This name is kept because compute_reward() calls:
+            self._compute_project1_std_reward()
+        """
+        components = self._compute_fyp_v7_reward_components()
+        return float(components['reward'])
+
+    def _compute_project1_std_reward_with_configurable_params(self, Z=None) -> float:
+        """Same v7 reward, but Z can be changed for parameter sweep."""
+        components = self._compute_fyp_v7_reward_components(Z=Z)
+        return float(components['reward'])
+
+    def get_reward_statistics(self) -> dict:
+        """Return reward statistics for evaluation logging."""
+        components = self._compute_fyp_v7_reward_components()
+
+        regular_group1_waiting_times = components['regular_group1_waiting_times']
+        regular_group2_waiting_times = components['regular_group2_waiting_times']
+        emergency_waiting_times = components['emergency_waiting_times']
+
+        stats = {
+            'regular_group1_vehicles': {
+                'count': len(regular_group1_waiting_times),
+                'mean_waiting': (
+                    float(np.mean(regular_group1_waiting_times))
+                    if len(regular_group1_waiting_times) > 0 else 0.0
+                ),
+                'std_waiting': (
+                    float(np.std(regular_group1_waiting_times))
+                    if len(regular_group1_waiting_times) > 0 else 0.0
+                ),
+                'max_waiting': (
+                    float(np.max(regular_group1_waiting_times))
+                    if len(regular_group1_waiting_times) > 0 else 0.0
+                ),
+                'min_waiting': (
+                    float(np.min(regular_group1_waiting_times))
+                    if len(regular_group1_waiting_times) > 0 else 0.0
+                ),
+            },
+            'regular_group2_vehicles': {
+                'count': len(regular_group2_waiting_times),
+                'mean_waiting': (
+                    float(np.mean(regular_group2_waiting_times))
+                    if len(regular_group2_waiting_times) > 0 else 0.0
+                ),
+                'std_waiting': (
+                    float(np.std(regular_group2_waiting_times))
+                    if len(regular_group2_waiting_times) > 0 else 0.0
+                ),
+                'max_waiting': (
+                    float(np.max(regular_group2_waiting_times))
+                    if len(regular_group2_waiting_times) > 0 else 0.0
+                ),
+                'min_waiting': (
+                    float(np.min(regular_group2_waiting_times))
+                    if len(regular_group2_waiting_times) > 0 else 0.0
+                ),
+            },
+            'emergency_vehicles': {
+                'count': len(emergency_waiting_times),
+                'mean_waiting': (
+                    float(np.mean(emergency_waiting_times))
+                    if len(emergency_waiting_times) > 0 else 0.0
+                ),
+                'std_waiting': (
+                    float(np.std(emergency_waiting_times))
+                    if len(emergency_waiting_times) > 0 else 0.0
+                ),
+                'max_waiting': (
+                    float(np.max(emergency_waiting_times))
+                    if len(emergency_waiting_times) > 0 else 0.0
+                ),
+                'min_waiting': (
+                    float(np.min(emergency_waiting_times))
+                    if len(emergency_waiting_times) > 0 else 0.0
+                ),
+            }
+        }
+
+        stats['reward_components'] = {
+            'lane_queues': components['lane_queues'],
+            'lane_weights': components['lane_weights'],
+            'road_vehicle_counts': components['road_vehicle_counts'],
+            'total_weighted_queue': components['total_weighted_queue'],
+            'total_reward': components['reward'],
+
+            'raw_reward': components['raw_reward'],
+
+            'EV_present': components['EV_present'],
+            'EV_id': components['EV_id'],
+            'EV_lane_id': components['EV_lane_id'],
+            'EV_position': components['EV_position'],
+            'EV_speed': components['EV_speed'],
+            'EV_tta': components['EV_tta'],
+            'EV_tta_norm': components['EV_tta_norm'],
+            'EV_weight': components['EV_weight'],
+
+            'ev_block_level': components['ev_block_level'],
+            'ev_wait_level': components['ev_wait_level'],
+            'ev_slow_level': components['ev_slow_level'],
+            'ev_tta_level': components['ev_tta_level'],
+            'ev_urgency': components['ev_urgency'],
+            'civilian_multiplier': components['civilian_multiplier'],
+
+            'ev_front_vehicle_count': components['ev_front_vehicle_count'],
+            'ev_front_halting_count': components['ev_front_halting_count'],
+
+            'total_vehicle_count': components['total_vehicle_count'],
+            'total_halting_count': components['total_halting_count'],
+            'total_lane_count': components['total_lane_count'],
+            'halting_per_lane': components['halting_per_lane'],
+            'occupancy_per_lane': components['occupancy_per_lane'],
+
+            'group1_wait_mean': components['group1_wait_mean'],
+            'group2_wait_mean': components['group2_wait_mean'],
+            'emergency_wait_mean': components['emergency_wait_mean'],
+            'group1_wait_std': components['group1_wait_std'],
+            'group2_wait_std': components['group2_wait_std'],
+            'emergency_wait_std': components['emergency_wait_std'],
+            'group2_excess_wait': components['group2_excess_wait'],
+
+            'regular_speed_mean': components['regular_speed_mean'],
+            'group2_speed_mean': components['group2_speed_mean'],
+
+            'ev_clearance_score': components['ev_clearance_score'],
+            'ev_speed_score': components['ev_speed_score'],
+            'regular_speed_score': components['regular_speed_score'],
+            'group2_speed_score': components['group2_speed_score'],
+            'normal_flow_score': components['normal_flow_score'],
+
+            'ev_clear_reward': components['ev_clear_reward'],
+            'ev_speed_reward': components['ev_speed_reward'],
+            'normal_flow_reward': components['normal_flow_reward'],
+            'regular_speed_reward': components['regular_speed_reward'],
+
+            'front_vehicle_cost': components['front_vehicle_cost'],
+            'front_halting_cost': components['front_halting_cost'],
+            'emergency_wait_cost': components['emergency_wait_cost'],
+            'group1_wait_cost': components['group1_wait_cost'],
+            'ev_slow_cost': components['ev_slow_cost'],
+            'group2_wait_cost': components['group2_wait_cost'],
+            'group2_std_cost': components['group2_std_cost'],
+            'group2_excess_wait_cost': components['group2_excess_wait_cost'],
+            'halting_per_lane_cost': components['halting_per_lane_cost'],
+            'occupancy_per_lane_cost': components['occupancy_per_lane_cost'],
+
+            # Older key names kept for compatibility.
+            'ev_clearance_reward': components['ev_clearance_reward'],
+            'ev_speed_reward': components['ev_speed_reward'],
+            'normal_traffic_reward': components['normal_traffic_reward'],
+            'front_vehicle_penalty': components['front_vehicle_penalty'],
+            'front_halting_penalty': components['front_halting_penalty'],
+            'emergency_wait_penalty': components['emergency_wait_penalty'],
+            'group1_wait_penalty': components['group1_wait_penalty'],
+            'group2_wait_penalty': components['group2_wait_penalty'],
+            'group2_std_penalty': components['group2_std_penalty'],
+            'group2_excess_wait_penalty': components['group2_excess_wait_penalty'],
+            'halting_per_lane_penalty': components['halting_per_lane_penalty'],
+            'occupancy_per_lane_penalty': components['occupancy_per_lane_penalty'],
+
+            'Z': components['Z'],
+        }
+
+        return stats
