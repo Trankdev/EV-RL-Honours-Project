@@ -247,13 +247,15 @@ class Observation(ObservationFunction):
     ###########################################################################
     
     # This is the LANE FEATURE version - where new additions are done as lane features
-    def _compute_fyp_observation(self) -> np.ndarray:
+    # TODO: need to edit line 563 in env.py whenever switching to/from this function - ob_length    = num_phases + num_in_lanes * 6 # TODO: will need to adjust to match observation space length
+    # RENAME THIS TO _compute_fyp_observation when want to use it
+    def _compute_fyp_observation_lane_version(self) -> np.ndarray:
         """
         FYP-style observation space
 
         Returns:
             observation: numpy array
-                = [phase_onehot(N_phases), lane_features(N_lanes × 5)]
+                = [phase_onehot(N_phases), lane_features(N_lanes × 6)]
 
         Each lane has 5 features:
         1. vehicle count / 17
@@ -261,6 +263,7 @@ class Observation(ObservationFunction):
         3. regular vehicle waiting time std / 100
         4. emergency vehicle delay ratio (0 = no delay (free flow), 1 = infinite delay)
         5. outgoing congestion state (0 = blocked, 1 = free)
+        6. estimated time to EV arrival (to intersection)
         """
         obs = []
 
@@ -291,11 +294,9 @@ class Observation(ObservationFunction):
             emergency_vehicles = [v for v in vehicles_info if v['is_emergency']]
 
             # Feature 1: vehicle count / 17
-            # TODO: Check where this 17 comes from and see if we need to change for ours
             feature1 = min(len(vehicles_info) / 17.0, 1.0)
 
             # Feature 2: mean waiting time / 100 (regular only)
-            # TODO: Check where this 100 comes from and see if we need to change for ours
             if len(regular_vehicles) > 0:
                 waiting_times = [v['waiting_time'] for v in regular_vehicles]
                 feature2 = min(np.mean(waiting_times) / 100.0, 1.0)
@@ -304,14 +305,12 @@ class Observation(ObservationFunction):
                 feature2 = 0.0
             
             # Feature 3: waiting time std / 100
-            # TODO: Check where this 100 comes from and see if we need to change for ours
             if len(waiting_times) > 1:
                 feature3 = min(np.std(waiting_times) / 100.0, 1.0)
             else:
                 feature3 = 0.0
 
             # OLD Feature 4 (retained incase need to revert back to this): emergency max waiting time / 100
-            # TODO: Check where this 100 comes from and see if we need to change for ours
             #if len(emergency_vehicles) > 0:
             #    emg_waiting_times = [v['waiting_time'] for v in emergency_vehicles]
             #    feature4 = min(max(emg_waiting_times) / 100.0, 1.0)
@@ -356,7 +355,6 @@ class Observation(ObservationFunction):
                         
 
             # Feature 5: outgoing road congestion state
-            # TODO: maybe make it so that this is 1 - feature so it is 1 = blocked and 0 = free (instead of the opposite, which it is rn)
             #feature5 = self._compute_outgoing_attention_for_lane(lane_idx) # old version
             feature5 = self._compute_outgoing_attention_for_lane_new(lane_id)
                         
@@ -400,12 +398,148 @@ class Observation(ObservationFunction):
             else:
                 feature6 = 0.0
             
-            # TODO: add Feature 7: Queue Length ahead of EV - MAYBE NOT NEEDED AS EV Delay Ratio does this as a proxy
+            # TODO: add Queue Length ahead of EV - MAYBE NOT NEEDED AS EV Delay Ratio does this as a proxy
+            
+            # TODO: could also try splitting EV TTA into EV speed and EV distance to intersection
 
             obs.extend([feature1, feature2, feature3, feature4, feature5, feature6])
 
         return np.array(obs, dtype=np.float32)
 
+    ###########################################################################
+    
+    # This is the INTERSECTION LEVEL FEATURE version - where certain features are switched to become intersection level features (instead of lane level)
+    # TODO: need to edit line 563 in env.py whenever switching to/from this function - ob_length    = num_phases + num_in_lanes * 6 # TODO: will need to adjust to match observation space length
+    # RENAME THIS TO _compute_fyp_observation when want to use it
+    def _compute_fyp_observation(self) -> np.ndarray:
+        """
+        FYP-style observation space
+        Returns:
+            observation: numpy array
+                = [phase_onehot(N_phases), 
+                   EV Delay Ratio (0-1), ← intersection level
+                   EV ETA urgency (0-1), ← intersection level
+                   lane_features(N_lanes × 4)]
+        Each lane has 4 features:
+            1. vehicle count / 17
+            2. regular vehicle mean waiting time / 100
+            3. regular vehicle waiting time std / 100
+            4. outgoing congestion state (0 = blocked, 1 = free)
+        """
+        obs = []
+        eng = self.world.eng
+    
+        # 1. Phase one-hot encoding
+        num_phases = len(self.ts.green_phases)
+        phase_onehot = [1.0 if self.ts.green_phase == i else 0.0
+                        for i in range(num_phases)]
+        obs.extend(phase_onehot)
+    
+        # 2. Flatten lane list
+        flat_lanes = [lane_id for road_lanes in self.lanes_road_observed
+                      for lane_id in road_lanes]
+    
+        # 3. Intersection-level EV features — scan all lanes once to find EV
+        ev_delay_ratio = 0.0
+        ev_eta = 0.0
+        ev_found_id = None
+        ev_found_lane = None
+        ev_found_position = None
+    
+        for lane_id in flat_lanes:
+            if lane_id == 'dummy':
+                continue
+            try:
+                vehicles_info = self._get_lane_vehicles_detailed(lane_id)
+                for v in vehicles_info:
+                    if v['is_emergency']:
+                        ev_found_id = v['id']
+                        ev_found_lane = lane_id
+                        ev_found_position = v['position']
+                        break
+            except Exception:
+                continue
+            if ev_found_id is not None:
+                break
+    
+        if ev_found_id is not None:
+            # EV Delay Ratio
+            try:
+                current_time = self.world.get_current_time()
+                if ev_found_id in self.world.ev_lane_entry_time:
+                    stored_lane, entry_time = self.world.ev_lane_entry_time[ev_found_id]
+                    actual_travel_time = current_time - entry_time
+                else:
+                    actual_travel_time = 0.0
+    
+                lane_max_speed = eng.lane.getMaxSpeed(ev_found_lane)
+    
+                if lane_max_speed > 0 and ev_found_position > 0 and actual_travel_time > 0:
+                    free_flow_time = ev_found_position / lane_max_speed
+                    ev_delay_ratio = 1.0 - (free_flow_time / max(actual_travel_time, free_flow_time))
+                    ev_delay_ratio = max(0.0, min(ev_delay_ratio, 1.0))
+            except Exception:
+                ev_delay_ratio = 0.0
+    
+            # EV ETA urgency
+            try:
+                next_tls = eng.vehicle.getNextTLS(ev_found_id)
+                if next_tls:
+                    distance = next_tls[0][2]
+                    current_speed = eng.vehicle.getSpeed(ev_found_id)
+                    if current_speed > 0.5:
+                        eta = distance / current_speed
+                        
+                        ev_eta = 1.0 - min(eta / 60.0, 1.0)  # TODO: tune this normalisation factor
+                    else:
+                        ev_eta = 1.0  # stopped = maximum urgency
+                else:
+                    ev_eta = 0.0  # EV has passed or not on approach
+            except Exception:
+                ev_eta = 0.0
+    
+        obs.append(ev_delay_ratio)
+        obs.append(ev_eta)
+    
+        # 4. Per-lane features (4 each)
+        for lane_idx, lane_id in enumerate(flat_lanes):
+            if lane_id == 'dummy':
+                obs.extend([0.0, 0.0, 0.0, 1.0])
+                continue
+    
+            try:
+                vehicles_info = self._get_lane_vehicles_detailed(lane_id)
+            except Exception as e:
+                print(f"Warning: Failed to retrieve information for lane {lane_id}: {e}")
+                obs.extend([0.0, 0.0, 0.0, 1.0])
+                continue
+    
+            regular_vehicles = [v for v in vehicles_info if not v['is_emergency']]
+    
+            # Feature 1: vehicle count / 17
+            feature1 = min(len(vehicles_info) / 17.0, 1.0)
+    
+            # Feature 2: regular mean waiting time / 100
+            if len(regular_vehicles) > 0:
+                waiting_times = [v['waiting_time'] for v in regular_vehicles]
+                feature2 = min(np.mean(waiting_times) / 100.0, 1.0)
+            else:
+                waiting_times = []
+                feature2 = 0.0
+    
+            # Feature 3: waiting time std / 100
+            if len(waiting_times) > 1:
+                feature3 = min(np.std(waiting_times) / 100.0, 1.0)
+            else:
+                feature3 = 0.0
+    
+            # Feature 4: outgoing road congestion state
+            feature4 = self._compute_outgoing_attention_for_lane_new(lane_id)
+    
+            obs.extend([feature1, feature2, feature3, feature4])
+    
+        return np.array(obs, dtype=np.float32)
+    
     ###########################################################################
 
     def _get_lane_vehicles_detailed(self, lane_id: str) -> list:
@@ -443,7 +577,7 @@ class Observation(ObservationFunction):
 
         return vehicles_info
 
-# TODO: Fixed version is below called "_compute_outgoing_attention_for_lane_new" - retained old version for baselines?
+# Fixed version is below called "_compute_outgoing_attention_for_lane_new" - retained old version for baselines?
 # - or incase new version doesn't work properly
 
     def _compute_outgoing_attention_for_lane(self, lane_idx: int) -> float:
@@ -493,7 +627,7 @@ class Observation(ObservationFunction):
         except Exception:
             return 1.0
         
-        
+    # TODO: maybe make it so that this is 1 - feature so it is 1 = blocked and 0 = free (instead of the opposite, which it is rn)
     def _compute_outgoing_attention_for_lane_new(self, lane_id: str) -> float:
         """
         Compute outgoing congestion for a specific incoming lane using actual
