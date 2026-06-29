@@ -79,27 +79,27 @@
     <!-- ===================================================== -->
 
     <flow id="flow_E01" type="car" begin="0" end="3600"
-          vehsPerHour="600" route="rd_E01"
+          vehsPerHour="400" route="rd_E01"
           departLane="best" departSpeed="max"/>
 
     <flow id="flow_E81" type="car" begin="0" end="3600"
-          vehsPerHour="600" route="rd_E81"
+          vehsPerHour="400" route="rd_E81"
           departLane="best" departSpeed="max"/>
 
     <flow id="flow_minus_E15" type="car" begin="0" end="3600"
-          vehsPerHour="600" route="rd_minus_E15"
+          vehsPerHour="400" route="rd_minus_E15"
           departLane="best" departSpeed="max"/>
 
     <flow id="flow_minus_E26" type="car" begin="0" end="3600"
-          vehsPerHour="600" route="rd_minus_E26"
+          vehsPerHour="400" route="rd_minus_E26"
           departLane="best" departSpeed="max"/>
 
     <flow id="flow_E92" type="car" begin="0" end="3600"
-          vehsPerHour="600" route="rd_E92"
+          vehsPerHour="400" route="rd_E92"
           departLane="best" departSpeed="max"/>
 
     <flow id="flow_minus_E23" type="car" begin="0" end="3600"
-          vehsPerHour="600" route="rd_minus_E23"
+          vehsPerHour="400" route="rd_minus_E23"
           departLane="best" departSpeed="max"/>
 
 
