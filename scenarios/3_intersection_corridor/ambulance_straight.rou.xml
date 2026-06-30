@@ -1,0 +1,22 @@
+<routes>
+    <vType id="ambulance_type"
+           vClass="emergency"
+           guiShape="emergency"
+           speedDev="0"
+           color="red"/>
+
+    <!-- Fixed EV corridor route -->
+    <route id="route_EV_corridor" edges="E01 E12 E23 E34"/>
+
+    <!-- 10 Emergency Vehicles (straight only) -->
+    <vehicle id="ambulance_0"  type="ambulance_type" route="route_EV_corridor" depart="100"  departLane="best" departSpeed="max"/>
+    <vehicle id="ambulance_1"  type="ambulance_type" route="route_EV_corridor" depart="200"  departLane="best" departSpeed="max"/>
+    <vehicle id="ambulance_2"  type="ambulance_type" route="route_EV_corridor" depart="300"  departLane="best" departSpeed="max"/>
+    <vehicle id="ambulance_3"  type="ambulance_type" route="route_EV_corridor" depart="400"  departLane="best" departSpeed="max"/>
+    <vehicle id="ambulance_4"  type="ambulance_type" route="route_EV_corridor" depart="500"  departLane="best" departSpeed="max"/>
+    <vehicle id="ambulance_5"  type="ambulance_type" route="route_EV_corridor" depart="600"  departLane="best" departSpeed="max"/>
+    <vehicle id="ambulance_6"  type="ambulance_type" route="route_EV_corridor" depart="700"  departLane="best" departSpeed="max"/>
+    <vehicle id="ambulance_7"  type="ambulance_type" route="route_EV_corridor" depart="800"  departLane="best" departSpeed="max"/>
+    <vehicle id="ambulance_8"  type="ambulance_type" route="route_EV_corridor" depart="900"  departLane="best" departSpeed="max"/>
+    <vehicle id="ambulance_9"  type="ambulance_type" route="route_EV_corridor" depart="1000" departLane="best" departSpeed="max"/>
+</routes>
