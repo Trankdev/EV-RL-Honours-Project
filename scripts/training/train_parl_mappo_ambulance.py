@@ -165,9 +165,9 @@ def create_sumo_config(scenario_dir, config_dir, gui=False): # TODO: Set gui=Fal
     config = {
         "name": "emergency_mappo_ambulance",
         "dir": scenario_dir,
-        "roadnetFile": "2_intersection_corridor.net.xml",
-        "flowFile": "vtypes.rou.xml,2_intersection_corridor.rou.xml,ambulance.rou.xml",
-        "combined_file": "2_intersection_corridor.sumocfg",
+        "roadnetFile": "3_intersection_corridor.net.xml",
+        "flowFile": "vtypes.rou.xml,3_intersection_corridor.rou.xml,ambulance.rou.xml",
+        "combined_file": "3_intersection_corridor.sumocfg",
         "gui": gui, # TODO: Set "gui" = gui, Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
         "no_warning": True,
         "decision_interval": 5,
@@ -194,7 +194,7 @@ def main():
     parser.add_argument('--config', type=str, default='mappo_fyp_config', # mappo_ambulance for BASELINE, mappo_fyp_config for FYP
                         help='Config name in configs/tsc/ (default: mappo_ambulance)') # TODO: does this need changing?
     parser.add_argument('--scenario-dir', type=str,
-                        default='scenarios/2_intersection_corridor', # change this when using different scenarios
+                        default='scenarios/3_intersection_corridor', # change this when using different scenarios
                         help='SUMO scenario directory')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
 
