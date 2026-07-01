@@ -4,16 +4,16 @@
     </vType>
 
     <!-- Ambulances depart every 100s with routes across the 3-intersection network.
-         Valid main edges: Entrance edges: E01, -E15, -E26, -E37, -E34, E103, E92, E81 Exit edges: -E01, E15, E26, E37, E34, -E103, -E92, -E81 -->
+         Valid main edges: Entrance edges: E01, -E15, -E26, -E37, -E34, E103, E92, E81
+         Exit edges: -E01, E15, E26, E37, E34, -E103, -E92, -E81 -->
 
-    <trip id="ambulance_0"  type="ambulance_type" depart="100"  from="E01"   to="-E81"   departPos="last"/>
-    <trip id="ambulance_1"  type="ambulance_type" depart="200"  from="-E15"  to="E37"    departPos="last"/>
-    <trip id="ambulance_2"  type="ambulance_type" depart="300"  from="-E26"  to="E15"    departPos="last"/>
-    <trip id="ambulance_3"  type="ambulance_type" depart="400"  from="-E37"  to="E34"    departPos="last"/>
-    <trip id="ambulance_4"  type="ambulance_type" depart="500"  from="-E34"  to="-E92"   departPos="last"/>
-    <trip id="ambulance_5"  type="ambulance_type" depart="600"  from="E103"  to="-E01"   departPos="last"/>
-    <trip id="ambulance_6"  type="ambulance_type" depart="700"  from="E92"   to="E26"    departPos="last"/>
-    <trip id="ambulance_7"  type="ambulance_type" depart="800"  from="E81"   to="-E103"  departPos="last"/>
-    <trip id="ambulance_8"  type="ambulance_type" depart="900"  from="E01"   to="-E92"   departPos="last"/>
-    <trip id="ambulance_9"  type="ambulance_type" depart="1000" from="E103"  to="E34"    departPos="last"/>
+    <trip id="ambulance_0"  type="ambulance_type" depart="100"  from="E01"   to="-E81"   departLane="best" departPos="base"/>
+    <trip id="ambulance_1"  type="ambulance_type" depart="200"  from="-E15"  to="E37"    departLane="best" departPos="base"/>
+    <trip id="ambulance_2"  type="ambulance_type" depart="300"  from="-E26"  to="E15"    departLane="best" departPos="base"/>
+    <trip id="ambulance_3"  type="ambulance_type" depart="400"  from="-E37"  to="E34"    departLane="best" departPos="base"/>
+    <trip id="ambulance_4"  type="ambulance_type" depart="500"  from="-E34"  to="-E92"   departLane="best" departPos="base"/>
+    <trip id="ambulance_5"  type="ambulance_type" depart="600"  from="E103"  to="-E01"   departLane="best" departPos="base"/>
+    <trip id="ambulance_6"  type="ambulance_type" depart="700"  from="E92"   to="E26"    departLane="best" departPos="base"/>
+    <trip id="ambulance_8"  type="ambulance_type" depart="900"  from="E01"   to="-E92"   departLane="best" departPos="base"/>
+    <trip id="ambulance_9"  type="ambulance_type" depart="1000" from="E103"  to="E34"    departLane="best" departPos="base"/>
 </routes>
