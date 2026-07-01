@@ -158,7 +158,7 @@ def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False)
     for ep in range(num_episodes):
 
         env_config = {
-            "sumo_config": "scenarios/2_intersection_corridor/2_intersection_corridor.sumocfg",  # IMPORTANT: your PARL wrapper builds this internally
+            "sumo_config": "scenarios/3_intersection_corridor/3_intersection_corridor.sumocfg",  # IMPORTANT: your PARL wrapper builds this internally
             "interface": "traci",
             "seed": seed + ep,
             "sync_mode": True,
@@ -172,9 +172,9 @@ def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False)
         sumo_cfg = {
             "name": "baseline",
             "dir": scenario_dir,
-            "roadnetFile": "2_intersection_corridor.net.xml",
-            "flowFile": "2_intersection_corridor.rou.xml", # TODO: YOU ALSO NEED TO MANUALLY CHANGE THE .SUMOCFG
-            "combined_file": "2_intersection_corridor.sumocfg",
+            "roadnetFile": "3_intersection_corridor.net.xml",
+            "flowFile": "3_intersection_corridor_1350.rou.xml", # TODO: YOU ALSO NEED TO MANUALLY CHANGE THE .SUMOCFG
+            "combined_file": "3_intersection_corridor.sumocfg",
             "gui": True, # TODO: HAVE TO CHANGE THIS VALUE TO CHANGE IF USE SUMO UI OR NOT, MAKE THIS WORK WITH A VAR.
             "no_warning": True,
             "decision_interval": 5,
@@ -261,7 +261,7 @@ def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False)
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/tsc/dqn_fyp_config.yaml")
-    parser.add_argument("--scenario-dir", default="scenarios/2_intersection_corridor")
+    parser.add_argument("--scenario-dir", default="scenarios/3_intersection_corridor")
     parser.add_argument("--episodes", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--gui", action="store_true")
