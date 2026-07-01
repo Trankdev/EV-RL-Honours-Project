@@ -166,7 +166,7 @@ def create_sumo_config(scenario_dir, config_dir, gui=False): # TODO: Set gui=Fal
         "name": "emergency_mappo_ambulance",
         "dir": scenario_dir,
         "roadnetFile": "3_intersection_corridor.net.xml",
-        "flowFile": "vtypes.rou.xml,3_intersection_corridor.rou.xml,ambulance.rou.xml",
+        "flowFile": "vtypes.rou.xml,3_intersection_corridor_1350.rou.xml,ambulance.rou.xml",
         "combined_file": "3_intersection_corridor.sumocfg",
         "gui": gui, # TODO: Set "gui" = gui, Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
         "no_warning": True,
