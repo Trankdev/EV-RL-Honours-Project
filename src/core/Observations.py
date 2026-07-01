@@ -247,7 +247,6 @@ class Observation(ObservationFunction):
     ###########################################################################
     
     # This is the LANE FEATURE version - where new additions are done as lane features
-    # TODO: need to edit line 563 in env.py whenever switching to/from this function - ob_length    = num_phases + num_in_lanes * 6 # TODO: will need to adjust to match observation space length
     # RENAME THIS TO _compute_fyp_observation when want to use it
     def _compute_fyp_observation_lane_version(self) -> np.ndarray:
         """
@@ -376,7 +375,7 @@ class Observation(ObservationFunction):
                             if current_speed > 0.5:  # EV is moving
                                 eta = distance / current_speed  # seconds
                                 
-                                # TODO: need to tune this normalisation factor
+                                # should tune this normalisation factor
                                 normalised_eta = min(eta / 60.0, 1.0)
                                 feature6 = 1.0 - normalised_eta  # 1 = close/urgent, 0 = far away
                             else:
@@ -398,9 +397,9 @@ class Observation(ObservationFunction):
             else:
                 feature6 = 0.0
             
-            # TODO: add Queue Length ahead of EV - MAYBE NOT NEEDED AS EV Delay Ratio does this as a proxy
+            # could add Queue Length ahead of EV - MAYBE NOT NEEDED AS EV Delay Ratio does this as a proxy
             
-            # TODO: could also try splitting EV TTA into EV speed and EV distance to intersection
+            # could also try splitting EV TTA into EV speed and EV distance to intersection
 
             obs.extend([feature1, feature2, feature3, feature4, feature5, feature6])
 
@@ -445,43 +444,40 @@ class Observation(ObservationFunction):
         ev_found_id = None
         ev_found_lane = None
         ev_found_position = None
+        ev_found_waiting_time = None
     
-        for lane_id in flat_lanes:
-            if lane_id == 'dummy':
-                continue
-            try:
-                vehicles_info = self._get_lane_vehicles_detailed(lane_id)
-                for v in vehicles_info:
-                    if v['is_emergency']:
-                        ev_found_id = v['id']
-                        ev_found_lane = lane_id
-                        ev_found_position = v['position']
-                        break
-            except Exception:
-                continue
-            if ev_found_id is not None:
-                break
-    
+        # Toggle which EV congestion metric feeds the observation.
+        # Switch this one line to flip between the two — obs length is unchanged either way.
+        EV_METRIC_MODE = 'delay_ratio'  # options: 'delay_ratio', 'waiting_time' # TODO: pick if you want EV Delay Ratio or EV Waiting time used
+
+        ev_metric = 0.0
+
         if ev_found_id is not None:
-            # EV Delay Ratio
-            try:
-                current_time = self.world.get_current_time()
-                if ev_found_id in self.world.ev_lane_entry_time:
-                    stored_lane, entry_time = self.world.ev_lane_entry_time[ev_found_id]
-                    actual_travel_time = current_time - entry_time
-                else:
-                    actual_travel_time = 0.0
-    
-                lane_max_speed = eng.lane.getMaxSpeed(ev_found_lane)
-    
-                if lane_max_speed > 0 and ev_found_position > 0 and actual_travel_time > 0:
-                    free_flow_time = ev_found_position / lane_max_speed
-                    ev_delay_ratio = 1.0 - (free_flow_time / max(actual_travel_time, free_flow_time))
-                    ev_delay_ratio = max(0.0, min(ev_delay_ratio, 1.0))
-            except Exception:
-                ev_delay_ratio = 0.0
-    
-            # EV ETA urgency # TODO: could make this work for future, downstream tls too
+            if EV_METRIC_MODE == 'waiting_time':
+                try:
+                    ev_metric = min(ev_found_waiting_time / 100.0, 1.0)
+                except Exception:
+                    ev_metric = 0.0
+
+            elif EV_METRIC_MODE == 'delay_ratio':
+                try:
+                    current_time = self.world.get_current_time()
+                    if ev_found_id in self.world.ev_lane_entry_time:
+                        stored_lane, entry_time = self.world.ev_lane_entry_time[ev_found_id]
+                        actual_travel_time = current_time - entry_time
+                    else:
+                        actual_travel_time = 0.0
+
+                    lane_max_speed = eng.lane.getMaxSpeed(ev_found_lane)
+
+                    if lane_max_speed > 0 and ev_found_position > 0 and actual_travel_time > 0:
+                        free_flow_time = ev_found_position / lane_max_speed
+                        ev_delay_ratio = 1.0 - (free_flow_time / max(actual_travel_time, free_flow_time))
+                        ev_metric = max(0.0, min(ev_delay_ratio, 1.0))
+                except Exception:
+                    ev_metric = 0.0
+
+            # EV ETA urgency
             try:
                 next_tls = eng.vehicle.getNextTLS(ev_found_id)
                 if next_tls:
@@ -489,16 +485,15 @@ class Observation(ObservationFunction):
                     current_speed = eng.vehicle.getSpeed(ev_found_id)
                     if current_speed > 0.5:
                         eta = distance / current_speed
-                        
-                        ev_eta = 1.0 - min(eta / 60.0, 1.0)  # TODO: tune this normalisation factor
+                        ev_eta = 1.0 - min(eta / 60.0, 1.0)
                     else:
-                        ev_eta = 1.0  # stopped = maximum urgency
+                        ev_eta = 1.0
                 else:
-                    ev_eta = 0.0  # EV has passed or not on approach
+                    ev_eta = 0.0
             except Exception:
                 ev_eta = 0.0
-    
-        obs.append(ev_delay_ratio)
+
+        obs.append(ev_metric)
         obs.append(ev_eta)
     
         # 4. Per-lane features (4 each)
@@ -516,11 +511,16 @@ class Observation(ObservationFunction):
     
             regular_vehicles = [v for v in vehicles_info if not v['is_emergency']]
     
-            # Feature 1: vehicle count / 17
-            feature1 = min(len(vehicles_info) / 17.0, 1.0)
-            
-            # ALTERNATE FEATURE 1: Lane Occupancy - a measure of how full a lane is from [0, 1] - vehicle count / lane capacity (capacity = lane_length / vehicle_size_min_gap)
-            #feature1 = min(len(vehicles_info) / self._lane_capacities[lane_idx], 1.0)
+            # Toggle which lane-fullness metric feeds Feature 1.
+            # Switch this one line to flip between the two — obs length is unchanged either way.
+            FEATURE1_MODE = 'fixed_17-baseline'  # options: 'fixed_17', 'lane_capacity' # TODO: pick if you want the fixed /17 count or per-lane capacity ('lane_capacity') occupancy used
+
+            if FEATURE1_MODE == 'lane_capacity':
+                # Lane Occupancy - how full a lane is from [0, 1] - vehicle count / lane capacity (capacity = lane_length / vehicle_size_min_gap)
+                feature1 = min(len(vehicles_info) / self._lane_capacities[lane_idx], 1.0)
+            else:
+                # Fixed vehicle count / 17
+                feature1 = min(len(vehicles_info) / 17.0, 1.0)
     
             # Feature 2: regular mean waiting time / 100
             if len(regular_vehicles) > 0:
