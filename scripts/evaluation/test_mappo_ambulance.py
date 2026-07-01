@@ -40,8 +40,13 @@ from src.core.Rewards import GetRewards
 # Single episode runner
 # ============================================================================
 
-def run_test_episode(env, agent, deterministic=True, verbose=False):
-    """Run one test episode; return a dict of metrics."""
+def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_idx=0):
+    """Run one test episode; return a dict of metrics.
+
+    focus_agent_idx: index into agent_ids identifying which single
+    intersection should be reported individually (in addition to the
+    global/all-intersection metrics that are always computed).
+    """
     obs = env.reset()
     agent.reset()
 
@@ -49,15 +54,20 @@ def run_test_episode(env, agent, deterministic=True, verbose=False):
     total_reward = {aid: 0 for aid in agent_ids}
     steps = 0
 
-    # Accumulators for reward-component stats
-    #ep_reg_mean_sum = 0.0 old historic code
-    #ep_reg_std_sum  = 0.0 old historic code
-    ep_reg_group1_mean_sum = 0.0
-    ep_reg_group1_std_sum = 0.0
-    ep_reg_group2_mean_sum = 0.0
-    ep_reg_group2_std_sum = 0.0
-    ep_emg_mean_sum = 0.0
-    ep_emg_std_sum  = 0.0
+    # Per-intersection accumulators for reward-component stats (one set per agent)
+    per_agent_sums = {
+        aid: {
+            'reg_group1_mean': 0.0, 'reg_group1_std': 0.0,
+            'reg_group2_mean': 0.0, 'reg_group2_std': 0.0,
+            'emg_mean': 0.0, 'emg_std': 0.0,
+        } for aid in agent_ids
+    }
+    # Global (all-intersection, count-weighted) accumulators
+    global_sums = {
+        'reg_group1_mean': 0.0, 'reg_group1_std': 0.0,
+        'reg_group2_mean': 0.0, 'reg_group2_std': 0.0,
+        'emg_mean': 0.0, 'emg_std': 0.0,
+    }
     stat_steps = 0
 
     while True:
@@ -72,22 +82,54 @@ def run_test_episode(env, agent, deterministic=True, verbose=False):
         for aid, r in reward_dict.items():
             total_reward[aid] += r
 
-        # Collect waiting-time statistics from the first intersection
+        # Collect waiting-time statistics from EVERY intersection this step,
+        # both per-agent and pooled into a single count-weighted "global" stat.
         try:
-            world    = env.env
-            first_ts = world.id2intersection[agent_ids[0]]
-            stats    = first_ts.Rewards.get_reward_statistics()
-            
-            # Kept historic code
-            #ep_reg_mean_sum += stats['regular_vehicles']['mean_waiting']
-            #ep_reg_std_sum  += stats['regular_vehicles']['std_waiting']
-            
-            ep_reg_group1_mean_sum += stats['regular_group1_vehicles']['mean_waiting']
-            ep_reg_group1_std_sum += stats['regular_group1_vehicles']['std_waiting']
-            ep_reg_group2_mean_sum += stats['regular_group2_vehicles']['mean_waiting']
-            ep_reg_group2_std_sum += stats['regular_group2_vehicles']['std_waiting']
-            ep_emg_mean_sum += stats['emergency_vehicles']['mean_waiting']
-            ep_emg_std_sum  += stats['emergency_vehicles']['std_waiting']
+            world = env.env
+
+            # per-group lists gathered across all agents THIS step, used to
+            # build the pooled/global stat for this step
+            step_counts  = {'reg_group1': [], 'reg_group2': [], 'emg': []}
+            step_means   = {'reg_group1': [], 'reg_group2': [], 'emg': []}
+            step_stds    = {'reg_group1': [], 'reg_group2': [], 'emg': []}
+
+            for aid in agent_ids:
+                ts    = world.id2intersection[aid]
+                stats = ts.Rewards.get_reward_statistics()
+
+                per_agent_sums[aid]['reg_group1_mean'] += stats['regular_group1_vehicles']['mean_waiting']
+                per_agent_sums[aid]['reg_group1_std']  += stats['regular_group1_vehicles']['std_waiting']
+                per_agent_sums[aid]['reg_group2_mean'] += stats['regular_group2_vehicles']['mean_waiting']
+                per_agent_sums[aid]['reg_group2_std']  += stats['regular_group2_vehicles']['std_waiting']
+                per_agent_sums[aid]['emg_mean']         += stats['emergency_vehicles']['mean_waiting']
+                per_agent_sums[aid]['emg_std']          += stats['emergency_vehicles']['std_waiting']
+
+                for key, group in (('reg_group1', 'regular_group1_vehicles'),
+                                    ('reg_group2', 'regular_group2_vehicles'),
+                                    ('emg', 'emergency_vehicles')):
+                    step_counts[key].append(stats[group]['count'])
+                    step_means[key].append(stats[group]['mean_waiting'])
+                    step_stds[key].append(stats[group]['std_waiting'])
+
+            # Combine each group's per-agent (count, mean, std) into one
+            # count-weighted pooled (mean, std) for this step. This is the
+            # correct way to merge sub-population statistics (equivalent to
+            # concatenating every vehicle's waiting time across intersections
+            # and computing mean/std over the pooled set), and it's O(n_agents)
+            # cheap arithmetic - no extra traci calls beyond the per-agent ones above.
+            for key in ('reg_group1', 'reg_group2', 'emg'):
+                counts = step_counts[key]
+                total_n = sum(counts)
+                if total_n > 0:
+                    g_mean = sum(c * m for c, m in zip(counts, step_means[key])) / total_n
+                    g_var  = sum(c * (s ** 2 + (m - g_mean) ** 2)
+                                 for c, m, s in zip(counts, step_means[key], step_stds[key])) / total_n
+                    g_std  = g_var ** 0.5
+                else:
+                    g_mean, g_std = 0.0, 0.0
+                global_sums[f'{key}_mean'] += g_mean
+                global_sums[f'{key}_std']  += g_std
+
             stat_steps += 1
         except Exception:
             pass
@@ -100,22 +142,40 @@ def run_test_episode(env, agent, deterministic=True, verbose=False):
         if done:
             break
 
-    # Episode-level averages
+    # Episode-level averages: per-intersection, global (pooled), and the
+    # single "focus" intersection (kept as top-level keys for backward compat)
+    focus_aid = agent_ids[focus_agent_idx]
+    per_intersection_stats = {}
     if stat_steps > 0:
-        reward_stats = {
-            'reg_group1_waiting_mean': ep_reg_group1_mean_sum / stat_steps,
-            'reg_group1_waiting_std':  ep_reg_group1_std_sum  / stat_steps,
-            'reg_group2_waiting_mean': ep_reg_group2_mean_sum / stat_steps,
-            'reg_group2_waiting_std':  ep_reg_group2_std_sum  / stat_steps,
-            'emg_waiting_mean': ep_emg_mean_sum / stat_steps,
-            'emg_waiting_std':  ep_emg_std_sum  / stat_steps,
+        for aid in agent_ids:
+            s = per_agent_sums[aid]
+            per_intersection_stats[aid] = {
+                'reg_group1_waiting_mean': s['reg_group1_mean'] / stat_steps,
+                'reg_group1_waiting_std':  s['reg_group1_std']  / stat_steps,
+                'reg_group2_waiting_mean': s['reg_group2_mean'] / stat_steps,
+                'reg_group2_waiting_std':  s['reg_group2_std']  / stat_steps,
+                'emg_waiting_mean': s['emg_mean'] / stat_steps,
+                'emg_waiting_std':  s['emg_std']  / stat_steps,
+            }
+        global_stats = {
+            'reg_group1_waiting_mean': global_sums['reg_group1_mean'] / stat_steps,
+            'reg_group1_waiting_std':  global_sums['reg_group1_std']  / stat_steps,
+            'reg_group2_waiting_mean': global_sums['reg_group2_mean'] / stat_steps,
+            'reg_group2_waiting_std':  global_sums['reg_group2_std']  / stat_steps,
+            'emg_waiting_mean': global_sums['emg_mean'] / stat_steps,
+            'emg_waiting_std':  global_sums['emg_std']  / stat_steps,
         }
     else:
-        reward_stats = {
+        empty = {
             'reg_group1_waiting_mean': 0.0, 'reg_group1_waiting_std': 0.0,
             'reg_group2_waiting_mean': 0.0, 'reg_group2_waiting_std': 0.0,
             'emg_waiting_mean': 0.0, 'emg_waiting_std': 0.0,
         }
+        per_intersection_stats = {aid: dict(empty) for aid in agent_ids}
+        global_stats = dict(empty)
+
+    # Top-level keys stay as the focus intersection's stats (backward compatible)
+    reward_stats = per_intersection_stats[focus_aid]
 
     world = env.env
     ambulance_trip_times   = [t for vid, t in world.vehicles_trip_time.items()
@@ -132,7 +192,16 @@ def run_test_episode(env, agent, deterministic=True, verbose=False):
         'steps':                 steps,
         'ambulance_duration':    float(ambulance_duration),
         'civilian_avg_trip_time': float(civilian_avg_trip_time),
+        # focus intersection (backward-compatible top-level keys)
+        'focus_agent_id':        focus_aid,
         **{k: float(v) for k, v in reward_stats.items()},
+        # NEW: global (all-intersection, count-weighted) stats
+        **{f'global_{k}': float(v) for k, v in global_stats.items()},
+        # NEW: full per-intersection breakdown, keyed by agent_id
+        'per_intersection': {
+            aid: {k: float(v) for k, v in d.items()}
+            for aid, d in per_intersection_stats.items()
+        },
     }
 
 
@@ -151,6 +220,7 @@ def test_model(
     gui=False,
     save_results=None,
     verbose=False,
+    focus_agent_idx=0,
 ):
     """
     Evaluate a trained MAPPO-Ambulance model.
@@ -225,7 +295,7 @@ def test_model(
         "name":             "test_mappo_emergency_ambulance", # was 'test_emergency_ambulance' historically
         "dir":              scenario_dir,
         "roadnetFile":      "3_intersection_corridor.net.xml",
-        "flowFile":         "vtypes.rou.xml,3_intersection_corridor_1350.rou.xml,ambulance_var1.rou.xml", # TODO: Scenarios: Check right network and demand files are used (also check right scenario folder is used in other places)
+        "flowFile":         "vtypes.rou.xml,3_intersection_corridor_1800.rou.xml,ambulance_var1.rou.xml", # TODO: Scenarios: Check right network and demand files are used (also check right scenario folder is used in other places)
         "combined_file":    "3_intersection_corridor.sumocfg",
         "gui":              True, # Forces GUI on if set to 'True' otherwise set to 'gui' variable
         "no_warning":       True,
@@ -330,7 +400,8 @@ def test_model(
         env = PARLSumoEnv(env_config)
 
         print(f"Episode {ep+1:3d}/{num_episodes} (seed={ep_seed}) ... ", end='', flush=True)
-        result = run_test_episode(env, agent, deterministic=deterministic, verbose=verbose)
+        result = run_test_episode(env, agent, deterministic=deterministic, verbose=verbose,
+                                   focus_agent_idx=focus_agent_idx)
         all_results.append(result)
 
         print(f"reward={result['avg_reward']:7.2f} | "
@@ -355,27 +426,53 @@ def test_model(
     avg_rew_mean,  avg_rew_std                = _stats('avg_reward')
     amb_mean,      amb_std                    = _stats('ambulance_duration')
     civ_mean,      civ_std                    = _stats('civilian_avg_trip_time')
-    reg_group1_mean_mean, reg_group1_mean_std = _stats('reg_group1_waiting_mean')
-    reg_group1_std_mean, reg_group1_std_std   = _stats('reg_group1_waiting_std')
-    reg_group2_mean_mean, reg_group2_mean_std = _stats('reg_group2_waiting_mean')
-    reg_group2_std_mean, reg_group2_std_std   = _stats('reg_group2_waiting_std')
-    emg_mean_mean, emg_mean_std               = _stats('emg_waiting_mean')
-    emg_std_mean,  emg_std_std                = _stats('emg_waiting_std')
     steps_mean,    steps_std                  = _stats('steps')
+
+    # focus intersection (backward-compatible keys) and global (pooled) metrics
+    # use the same _stats() helper, just pointed at the 'global_*' keys for the latter
+    def _print_table(title, prefix):
+        rg1m_m, rg1m_s = _stats(f'{prefix}reg_group1_waiting_mean')
+        rg1s_m, rg1s_s = _stats(f'{prefix}reg_group1_waiting_std')
+        rg2m_m, rg2m_s = _stats(f'{prefix}reg_group2_waiting_mean')
+        rg2s_m, rg2s_s = _stats(f'{prefix}reg_group2_waiting_std')
+        egm_m,  egm_s  = _stats(f'{prefix}emg_waiting_mean')
+        print(f"  {title}")
+        print(f"    EMG wait mean             : {egm_m:8.2f}s +/- {egm_s:.2f}s") # these metrics are all matching what the title says - focus intersection is just one isolated intersection (for ID in brackets), while global is all intersections - avg.
+        print(f"    Regular Group 1 wait mean : {rg1m_m:8.2f}s +/- {rg1m_s:.2f}s") 
+        print(f"    Regular Group 1 wait std  : {rg1s_m:8.2f}s +/- {rg1s_s:.2f}s")
+        print(f"    Regular Group 2 wait mean : {rg2m_m:8.2f}s +/- {rg2m_s:.2f}s")
+        print(f"    Regular Group 2 wait std  : {rg2s_m:8.2f}s +/- {rg2s_s:.2f}s")
+        return {
+            'reg_group1_waiting_mean_mean': rg1m_m, 'reg_group1_waiting_mean_std': rg1m_s,
+            'reg_group1_waiting_std_mean':  rg1s_m, 'reg_group1_waiting_std_std':  rg1s_s,
+            'reg_group2_waiting_mean_mean': rg2m_m, 'reg_group2_waiting_mean_std': rg2m_s,
+            'reg_group2_waiting_std_mean':  rg2s_m, 'reg_group2_waiting_std_std':  rg2s_s,
+            'emg_waiting_mean_mean': egm_m, 'emg_waiting_mean_std': egm_s,
+        }
+
+    focus_aid = all_results[0]['focus_agent_id'] if all_results else None
 
     print(f"\n{'='*80}")
     print("Evaluation Summary")
     print(f"{'='*80}")
-    print(f"  Avg reward          : {avg_rew_mean:8.2f} +/- {avg_rew_std:.2f}")
-    print(f"  EMV trip time       : {amb_mean:8.2f}s +/- {amb_std:.2f}s")
-    print(f"  Civilian trip time  : {civ_mean:8.2f}s +/- {civ_std:.2f}s")
-    print(f"  Regular Group 1 wait mean   : {reg_group1_mean_mean:8.2f}s +/- {reg_group1_mean_std:.2f}s")
-    print(f"  Regular Group 1 wait std    : {reg_group1_std_mean:8.2f}s +/- {reg_group1_std_std:.2f}s")
-    print(f"  Regular Group 2 wait mean   : {reg_group2_mean_mean:8.2f}s +/- {reg_group2_mean_std:.2f}s")
-    print(f"  Regular Group 2 wait std    : {reg_group2_std_mean:8.2f}s +/- {reg_group2_std_std:.2f}s")
-    print(f"  EMG wait mean       : {emg_mean_mean:8.2f}s +/- {emg_mean_std:.2f}s")
-    print(f"  Avg steps/episode   : {steps_mean:8.1f} +/- {steps_std:.1f}")
+    print(f"  Avg reward          : {avg_rew_mean:8.2f} +/- {avg_rew_std:.2f}") # averaged across all agents
+    print(f"  EMV trip time       : {amb_mean:8.2f}s +/- {amb_std:.2f}s") # is for whole network
+    print(f"  Civilian trip time  : {civ_mean:8.2f}s +/- {civ_std:.2f}s") # is for whole network
+    print(f"  Avg steps/episode   : {steps_mean:8.1f} +/- {steps_std:.1f}") # is episode related
+    print()
+    focus_summary  = _print_table(f"Focus intersection ({focus_aid})", prefix='')
+    print()
+    global_summary = _print_table("Global (all intersections, averaged)", prefix='global_')
     print(f"{'='*80}\n")
+
+    # per-intersection breakdown (mean over episodes for every intersection)
+    per_intersection_summary = {}
+    if all_results:
+        for aid in all_results[0]['per_intersection'].keys():
+            per_intersection_summary[aid] = {
+                metric: float(np.mean([r['per_intersection'][aid][metric] for r in all_results]))
+                for metric in all_results[0]['per_intersection'][aid].keys()
+            }
 
     summary = {
         'model_path':            model_path,
@@ -385,6 +482,7 @@ def test_model(
         'num_episodes':          num_episodes,
         'deterministic':         deterministic,
         'seed':                  seed,
+        'focus_agent_id':        focus_aid,
         # aggregated metrics
         'avg_reward_mean':       avg_rew_mean,
         'avg_reward_std':        avg_rew_std,
@@ -392,18 +490,14 @@ def test_model(
         'ambulance_time_std':    amb_std,
         'civilian_time_mean':    civ_mean,
         'civilian_time_std':     civ_std,
-        'reg_group1_waiting_mean_mean': reg_group1_mean_mean,
-        'reg_group1_waiting_mean_std':  reg_group1_mean_std,
-        'reg_group1_waiting_std_mean':  reg_group1_std_mean,
-        'reg_group1_waiting_std_std':   reg_group1_std_std,
-        'reg_group2_waiting_mean_mean': reg_group2_mean_mean,
-        'reg_group2_waiting_mean_std':  reg_group2_mean_std,
-        'reg_group2_waiting_std_mean':  reg_group2_std_mean,
-        'reg_group2_waiting_std_std':   reg_group2_std_std,
-        'emg_waiting_mean_mean': emg_mean_mean,
-        'emg_waiting_mean_std':  emg_mean_std,
         'steps_mean':            steps_mean,
         'steps_std':             steps_std,
+        # focus-intersection waiting-time metrics (backward compatible names)
+        **focus_summary,
+        # NEW: global (all-intersection, count-weighted) waiting-time metrics
+        **{f'global_{k}': v for k, v in global_summary.items()},
+        # NEW: per-intersection waiting-time metrics, keyed by agent_id
+        'per_intersection_summary': per_intersection_summary,
         # per-episode detail
         'all_results':           all_results,
     }
@@ -443,7 +537,7 @@ Examples:
 """)
     
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/0.BaselineKodagodaStyle_mappo_ambulance_K0.5_Z3.0_seed42_20260701_160604/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
+                        default='experiments/mappo_ambulance_K0.5_Z3.0_seed42_20260701_202729/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
                         help='Path to the .pt model checkpoint')
     
     parser.add_argument('--config', type=str,
@@ -469,6 +563,9 @@ Examples:
                         help='Print step-level progress every 50 steps')
     parser.add_argument('--save-results', type=str, default=None,
                         help='Path to save JSON result file')
+    parser.add_argument('--focus-agent-idx', type=int, default=0,
+                        help='Index (into agent_ids) of the single intersection to '
+                             'report individually, in addition to the global metrics (default: 0)')
 
     args = parser.parse_args()
 
@@ -483,6 +580,7 @@ Examples:
         gui=args.gui,
         save_results=args.save_results,
         verbose=args.verbose,
+        focus_agent_idx=args.focus_agent_idx,
     )
 
 
