@@ -481,7 +481,7 @@ class Observation(ObservationFunction):
             except Exception:
                 ev_delay_ratio = 0.0
     
-            # EV ETA urgency
+            # EV ETA urgency # TODO: could make this work for future, downstream tls too
             try:
                 next_tls = eng.vehicle.getNextTLS(ev_found_id)
                 if next_tls:
@@ -518,6 +518,9 @@ class Observation(ObservationFunction):
     
             # Feature 1: vehicle count / 17
             feature1 = min(len(vehicles_info) / 17.0, 1.0)
+            
+            # ALTERNATE FEATURE 1: Lane Occupancy - a measure of how full a lane is from [0, 1] - vehicle count / lane capacity (capacity = lane_length / vehicle_size_min_gap)
+            #feature1 = min(len(vehicles_info) / self._lane_capacities[lane_idx], 1.0)
     
             # Feature 2: regular mean waiting time / 100
             if len(regular_vehicles) > 0:

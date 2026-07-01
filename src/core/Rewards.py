@@ -187,6 +187,9 @@ class GetRewards(ObservationFunction):
         if 'final_year_project' in self.algorithm_name.lower() or 'fyp' in self.algorithm_name.lower():
             return self._compute_project1_std_reward()
         
+        print("The reward function is likely not being computed correctly, please use 'project1_std_dqn' for baseline or 'final_year_project' for an altered fyp version of reward")
+        print("If confused, ctrl + f and find this print statement in Rewards.py")
+        
         # Emergency priority special case
         if 'emergency_vehicle_priority' in self.fns_subscribed:
             return self._compute_emergency_priority_reward()
@@ -297,7 +300,8 @@ class GetRewards(ObservationFunction):
             
             return float(reward_components[0])
 
-    def _compute_project1_std_reward_old(self) -> float:
+    # TODO: this one HAS to be right for which reward you want to use
+    def _compute_project1_std_reward(self) -> float:
         """
         Project 1 standard deviation-aware reward.
     
@@ -333,14 +337,14 @@ class GetRewards(ObservationFunction):
         # iterate over all observed lanes
         for road_lanes in self.lanes_road_observed:
             for lane_id in road_lanes:
+                # lanes of concern -E15_1 and E81_1
                 try:
                     # get all vehicles on lane
                     vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
-                    
                     for veh_id in vehicle_ids:
                         try:
                             # Get accumulated waiting time
-                            waiting_time = eng.vehicle.getAccumulatedWaitingTime(veh_id)
+                            waiting_time = eng.vehicle.getAccumulatedWaitingTime(veh_id) # this caps at 100 s
                             
                             # Determine vehicle type
                             veh_type = eng.vehicle.getTypeID(veh_id)
@@ -399,7 +403,7 @@ class GetRewards(ObservationFunction):
         
         return float(reward)
 
-
+    # I don't think this is actually used for anything
     def _compute_project1_std_reward_with_configurable_params_old(self, K=None, Z=None) -> float:
         """
         Project 1 standard deviation reward with configurable K and Z parameters
@@ -460,6 +464,7 @@ class GetRewards(ObservationFunction):
         
         return float(reward)
     
+    # this probably never needs to be used again as it is just for the testing/evaluation metrics and we want groups in ours
     def get_reward_statistics_old(self) -> dict:
         """
         Get reward statistics at the current timestep (for analysis).
@@ -561,9 +566,13 @@ class GetRewards(ObservationFunction):
 
 ##############################################################################
 # New code for our final year project (FYP)
+# note the way I been switching what is used is put _new at end of new and remove _old when using Baseline
+# and when using new reward, I put _old at end of old/baseline code and remove _new from new code so new FYP Reward is used
 ##############################################################################
 
-    def _compute_project1_std_reward(self) -> float: # TODO: rename this and fix all calls to this to reflect FYP better
+
+    # TODO: this one HAS to be right for which reward you want to use
+    def _compute_project1_std_reward_new(self) -> float: # TODO: rename this and fix all calls to this to reflect FYP better
         """
         Final year project reward
         
@@ -661,7 +670,7 @@ class GetRewards(ObservationFunction):
         
         return float(reward)
 
-
+    # I don't think this is used for anything
     def _compute_project1_std_reward_with_configurable_params(self, Z=None) -> float:
         """
         Project 1 standard deviation reward with configurable Z parameters
@@ -673,7 +682,7 @@ class GetRewards(ObservationFunction):
         Returns:
             reward: float
         """
-        config = self.REWARD_CONFIGS['final_year_project_reward'] # TODO: look into how this works
+        config = self.REWARD_CONFIGS['final_year_project_reward'] # look into how this works
         
         # Use provided or default parameters
         Z = Z if Z is not None else config['Z']
@@ -712,8 +721,8 @@ class GetRewards(ObservationFunction):
         lane_weights = []
     
         eps = 1e-4 # to avoid divide by zero error
-        max_weight = 75.0  # TODO: refine this tuning - prevents explosion
-        max_tta = 60.0    # TODO: tune this - FOR NORMALISATION
+        max_weight = 75.0  # refine this tuning - prevents explosion
+        max_tta = 60.0    # tune this - FOR NORMALISATION
     
         for road_lanes in self.lanes_road_observed:
             for lane_id in road_lanes:
@@ -757,6 +766,7 @@ class GetRewards(ObservationFunction):
         
         return float(reward)
 
+    # This is only used for getting the stats for evaluation/testing - is NOT used for training
     def get_reward_statistics(self) -> dict:
         """
         Gets new reward statistics at the current timestep (for analysis).

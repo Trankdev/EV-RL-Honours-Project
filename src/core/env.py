@@ -560,7 +560,7 @@ class parse_sumo_config(): # Does static information extraction affect parallel 
             # Number of lanes is determined by the network, not hardcoded
             num_phases   = len(self.green_phases[tl_id])
             num_in_lanes = sum(len(lanes) for lanes in tl_info['lanes_road_observed_in_only'])
-            ob_length    = num_phases + num_in_lanes * 6 # TODO: will need to adjust to match observation space length
+            ob_length    = 2 + num_phases + num_in_lanes * 4 # TODO: will need to adjust to match observation space length
 
             return gym.spaces.Box(
                 low=np.zeros(ob_length, dtype=np.float32),
