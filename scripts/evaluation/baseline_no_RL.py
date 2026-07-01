@@ -150,7 +150,7 @@ def run_episode(env, policy, verbose=False):
 # =========================================================
 def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False):
 
-    with open(config_path, "r") as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
     all_results = []
@@ -182,10 +182,12 @@ def test_baseline(config_path, scenario_dir, num_episodes=5, seed=42, gui=False)
             "yellow_length": 4,
         }
         
-        sumo_config_path = "tmp/baseline_config.json"
+        configs_dir = "tmp/baseline_no_RL_configs"
+        os.makedirs(configs_dir, exist_ok=True)
         
-        with open(sumo_config_path, "w") as f:
-            json.dump(sumo_cfg, f)
+        sumo_config_path = os.path.join(configs_dir, 'test_sumo_config.json')
+        with open(sumo_config_path, 'w') as f:
+            json.dump(sumo_cfg, f, indent=2)
         
         env_config["sumo_config"] = os.path.abspath(sumo_config_path)
 
