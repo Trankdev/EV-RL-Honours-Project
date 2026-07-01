@@ -563,7 +563,7 @@ Examples:
                         help='Print step-level progress every 50 steps')
     parser.add_argument('--save-results', type=str, default=None,
                         help='Path to save JSON result file')
-    parser.add_argument('--focus-agent-idx', type=int, default=0,
+    parser.add_argument('--focus-agent-idx', type=int, default=0, # TODO: can change this default='x' x value to get a different intersection of interest in evaluation metric summary
                         help='Index (into agent_ids) of the single intersection to '
                              'report individually, in addition to the global metrics (default: 0)')
 
