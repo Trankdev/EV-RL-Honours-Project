@@ -158,17 +158,17 @@ def run_episode(env, agent, obs_dim, train=True):
 # SUMO config builder
 # ============================================================================
 
-def create_sumo_config(scenario_dir, config_dir, gui=False): # TODO: Set gui=False for fast training, Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
+def create_sumo_config(scenario_dir, config_dir, gui=False): # Set gui=False for fast training, Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
     """Create the SUMO config JSON file for the experiment."""
     os.makedirs(config_dir, exist_ok=True)
 
     config = {
         "name": "emergency_mappo_ambulance",
         "dir": scenario_dir,
-        "roadnetFile": "3_intersection_corridor.net.xml",
-        "flowFile": "vtypes.rou.xml,3_intersection_corridor_1350.rou.xml,ambulance.rou.xml",
-        "combined_file": "3_intersection_corridor.sumocfg",
-        "gui": gui, # TODO: Set "gui" = gui, Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
+        "roadnetFile": "3_intersection_corridor.net.xml", # Change if changing network
+        "flowFile": "vtypes.rou.xml,3_intersection_corridor_1350.rou.xml,ambulance_var1.rou.xml", # TODO: Scenarios: Check right network and demand files are used (also check right scenario folder is used in other places)
+        "combined_file": "3_intersection_corridor.sumocfg", # Change if changing network (may also have to edit this file if switching the demand in use)
+        "gui": gui, # Set "gui" = gui, Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
         "no_warning": True,
         "decision_interval": 5,
         "min_green": 5,
@@ -191,8 +191,8 @@ def main():
         description='Train MAPPO agent with project1-style EMV-aware obs+reward')
 
     # Config / scenario
-    parser.add_argument('--config', type=str, default='mappo_fyp_config', # mappo_ambulance for BASELINE, mappo_fyp_config for FYP
-                        help='Config name in configs/tsc/ (default: mappo_ambulance)') # TODO: does this need changing?
+    parser.add_argument('--config', type=str, default='mappo_ambulance', # TODO: Rewards: Factors (e.g. Z and K) for the reward are taken from this - should align with reward being used - from configs/tsc folder - mappo_ambulance for BASELINE, mappo_fyp_config for FYP
+                        help='Config name in configs/tsc/ (baseline is: mappo_ambulance)')
     parser.add_argument('--scenario-dir', type=str,
                         default='scenarios/3_intersection_corridor', # change this when using different scenarios
                         help='SUMO scenario directory')
@@ -226,8 +226,8 @@ def main():
         config = yaml.safe_load(f)
 
     # Resolve K and Z: CLI > YAML > hardcoded default
-    K = args.K if args.K is not None else config.get('algorithm', {}).get('ambulance', {}).get('K', 0.5)
-    Z = args.Z if args.Z is not None else config.get('algorithm', {}).get('ambulance', {}).get('Z', 3.0)
+    K = args.K if args.K is not None else config.get('algorithm', {}).get('ambulance', {}).get('K', 0.5) # to be safe - the fallback defaults should match the config being used
+    Z = args.Z if args.Z is not None else config.get('algorithm', {}).get('ambulance', {}).get('Z', 3.0) # to be safe - the fallback defaults should match the config being used
 
     # Inject K and Z into the reward function's class-level config so that
     # _compute_project1_std_reward() picks them up at runtime.
@@ -264,22 +264,22 @@ def main():
     sys.stderr = Tee(sys.stderr, log_file_handle)
 
     print(f"\n{'='*70}")
-    print(f"MAPPO-Ambulance Training - EMV Priority (project1-std obs+reward)")
+    print("MAPPO-Ambulance Training - EMV Priority (project1-std obs+reward)")
     print(f"{'='*70}")
     print(f"Experiment dir : {exp_dir}")
-    print(f"   |-- models/                (model checkpoints)")
-    print(f"   |-- logs/")
-    print(f"   |   |-- console_output.log (terminal output)")
-    print(f"   |   |-- training.json      (per-episode metrics)")
-    print(f"   |   `-- final_results.json (final summary)")
-    print(f"   `-- configs/               (SUMO config)")
-    print(f"Console log    : {console_log_path}")
+    print("   |-- models/                (model checkpoints)")
+    print("   |-- logs/")
+    print("   |   |-- console_output.log (terminal output)")
+    print("   |   |-- training.json      (per-episode metrics)")
+    print("   |   `-- final_results.json (final summary)")
+    print("   `-- configs/               (SUMO config)")
+    print("Console log    : {console_log_path}")
     print(f"{'='*70}\n")
 
     # ------------------------------------------------------------------
     # Build SUMO config
     # ------------------------------------------------------------------
-    sumo_config_path = create_sumo_config(args.scenario_dir, configs_save_dir, gui=False) # TODO: set GUI to false for fast training - Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
+    sumo_config_path = create_sumo_config(args.scenario_dir, configs_save_dir, gui=False) # set GUI to false for fast training - Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
     print(f"SUMO config    : {sumo_config_path}\n")
 
     # ------------------------------------------------------------------
@@ -298,7 +298,7 @@ def main():
         "obs_to_subscribe":      config['algorithm']['observation']['obs_to_subscribe'],
         "reward_to_subscribe":   config['algorithm']['reward']['reward_to_subscribe'],
         # Activates project1-style observation AND reward routing
-        "algorithm_name":        "final_year_project_dqn", # TODO: change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
+        "algorithm_name":        "project1_std_dqn", # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
         "normalize_observation": config['algorithm']['observation'].get('normalize', False),
         "norm_params":           config['algorithm']['observation'].get('norm_params', {}),
         "reward_weights":        config['algorithm']['reward'].get('reward_weights', [1.0]),
@@ -313,15 +313,26 @@ def main():
     obs_dim   = env.observation_space(agent_ids[0]).shape[0]
     act_dim   = env.action_space(agent_ids[0]).n
 
-    print(f"Environment:")
+    print("Environment:")
     print(f"   Agent IDs : {agent_ids}")
     print(f"   N Agents  : {n_agents}")
-    print(f"   Obs Dim   : {obs_dim}  (project1_std: phase_onehot + 12 lanes × 5 features)")
+    print(f"   Obs Dim   : {obs_dim}  (varies depending what was used)")
     print(f"   Act Dim   : {act_dim}")
-    print(f"\nEMV reward parameters:")
+    print("\nEMV reward parameters:")
     print(f"   K (std weight)         : {K}")
     print(f"   Z (EMV penalty mult.)  : {Z}")
-    print(f"   Formula: reward = 50 - [(reg_mean + {K}*reg_std) + {Z}*(emg_mean + {K}*emg_std)]")
+    print("   Formula: reward = depends what is used")
+    
+    algorithm_name = env_config["algorithm_name"]
+    print("=" * 70)
+    if algorithm_name == "project1_std_dqn":
+        print("\nUsing BASELINE RL (Kodogoda-style) observation/state space\n")
+        
+    elif algorithm_name == "final_year_project":
+        print("\nUsing FINAL YEAR PROJECT observation/state space\n")
+    else:
+        print(f"\nPotential algorithm name mismatch: {algorithm_name}\n")
+    print("=" * 70)
 
     # ------------------------------------------------------------------
     # MAPPO agent
@@ -455,8 +466,8 @@ def main():
         'Z':                 Z,
         'config_path':       config_path,
         'exp_dir':           exp_dir,
-        'algorithm':         'MAPPO-Ambulance',
-        'algorithm_name_env': 'final_year_project_dqn', # TODO: change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
+        'algorithm':         'MAPPO-Ambulance', # I dont think this needs to be renamed? don't think its used for any if statements - only algorithm_name at line ~300 is 100% used and important
+        'algorithm_name_env': 'project1_std_dqn', # TODO: MAY? affect what Observation state space is being used (not 100% sure) - change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
         'obs_dim':           obs_dim,
         'pretrained_model':  args.load_model if args.load_model else None,
         'start_episode':     start_episode,
@@ -467,15 +478,15 @@ def main():
 
     elapsed_h = (time.time() - training_start_time) / 3600
     print(f"\n{'='*70}")
-    print(f"Training complete!")
+    print("Training complete!")
     print(f"{'='*70}")
     print(f"Experiment dir : {exp_dir}")
-    print(f"   |-- models/agent_final.pt       (final model)")
-    print(f"   |-- logs/training.json          (per-episode metrics)")
-    print(f"   |-- logs/final_results.json     (final summary)")
-    print(f"   |-- logs/console_output.log     (full console output)")
-    print(f"   `-- exp_config.json             (experiment config)")
-    print(f"\nPerformance summary:")
+    print("   |-- models/agent_final.pt       (final model)")
+    print("   |-- logs/training.json          (per-episode metrics)")
+    print("   |-- logs/final_results.json     (final summary)")
+    print("   |-- logs/console_output.log     (full console output)")
+    print("   `-- exp_config.json             (experiment config)")
+    print("\nPerformance summary:")
     if args.load_model:
         print(f"   Pretrained model  : {args.load_model}")
         print(f"   Episodes trained  : {start_episode} - {max_episodes} "
