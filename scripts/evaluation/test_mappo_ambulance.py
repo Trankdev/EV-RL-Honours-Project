@@ -225,7 +225,7 @@ def test_model(
         "name":             "test_mappo_emergency_ambulance", # was 'test_emergency_ambulance' historically
         "dir":              scenario_dir,
         "roadnetFile":      "3_intersection_corridor.net.xml",
-        "flowFile":         "vtypes.rou.xml,3_intersection_corridor_1350.rou.xml,ambulance.rou.xml",
+        "flowFile":         "vtypes.rou.xml,3_intersection_corridor_1350.rou.xml,ambulance_var1.rou.xml", # TODO: Scenarios: Check right network and demand files are used (also check right scenario folder is used in other places)
         "combined_file":    "3_intersection_corridor.sumocfg",
         "gui":              True, # Forces GUI on if set to 'True' otherwise set to 'gui' variable
         "no_warning":       True,
@@ -239,7 +239,7 @@ def test_model(
 
     # ------------------------------------------------------------------
     # Environment config
-    # algorithm_name MUST be "final_year_project_dqn" to match training
+    # algorithm_name MUST be "final_year_project_dqn" to match training or "project1_std_dqn" for baseline
     # ------------------------------------------------------------------
     env_config = {
         "sumo_config":           os.path.abspath(sumo_config_path),
@@ -248,7 +248,7 @@ def test_model(
         "sync_mode":             True,
         "obs_to_subscribe":      config['algorithm']['observation']['obs_to_subscribe'],
         "reward_to_subscribe":   config['algorithm']['reward']['reward_to_subscribe'],
-        "algorithm_name":        "final_year_project_dqn",   # TODO: change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
+        "algorithm_name":        "project1_std_dqn",   # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
         "normalize_observation": config['algorithm']['observation'].get('normalize', False),
         "norm_params":           config['algorithm']['observation'].get('norm_params', {}),
         "reward_weights":        config['algorithm']['reward'].get('reward_weights', [1.0]),
@@ -303,6 +303,17 @@ def test_model(
     agent.load(model_path)
     agent.mac.agent.eval()
     print("Model loaded successfully.\n")
+    
+    algorithm_name = env_config["algorithm_name"]
+    print("=" * 70)
+    if algorithm_name == "project1_std_dqn":
+        print("\nUsing BASELINE RL (Kodogoda-style) observation/state space\n")
+        
+    elif algorithm_name == "final_year_project":
+        print("\nUsing FINAL YEAR PROJECT observation/state space\n")
+    else:
+        print(f"\nPotential algorithm name mismatch: {algorithm_name}\n")
+    print("=" * 70)
 
     # ------------------------------------------------------------------
     # Test loop
@@ -369,7 +380,7 @@ def test_model(
     summary = {
         'model_path':            model_path,
         'config_path':           config_path,
-        'algorithm_name_env':    'final_year_project_dqn', # TODO: change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
+        'algorithm_name_env':    'project1_std_dqn', # TODO: MAY? affect what Observation state space is being used (not 100% sure) - change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
         'Z':                     Z,
         'num_episodes':          num_episodes,
         'deterministic':         deterministic,
@@ -431,13 +442,12 @@ Examples:
       --save-results evaluations/my_test.json
 """)
     
-    # TODO: Change this top arguments default '' to change the trained model that is being used
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/*insert_model_folder_name*/models/agent_final.pt',
+                        default='experiments/0.BaselineKodagodaStyle_mappo_ambulance_K0.5_Z3.0_seed42_20260701_160604/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
                         help='Path to the .pt model checkpoint')
     
     parser.add_argument('--config', type=str,
-                        default='configs/tsc/mappo_fyp_config.yaml',
+                        default='configs/tsc/mappo_ambulance.yaml', # TODO: Rewards: Factors (e.g. Z and K) for the reward are taken from this - should align with reward being used - from configs/tsc folder - mappo_ambulance for BASELINE, mappo_fyp_config for FYP
                         help='YAML config used during training (default: configs/tsc/mappo_fyp_config.yaml)')
     parser.add_argument('--scenario-dir', type=str,
                         default='scenarios/3_intersection_corridor', # change to scenario to be tested on
