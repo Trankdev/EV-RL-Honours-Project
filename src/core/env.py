@@ -318,10 +318,10 @@ class parse_sumo_config(): # Does static information extraction affect parallel 
         self.directions = [self.directions[i] for i in order]
         self.outs = [self.outs[i] for i in order]
         self.out_roads = [self.roads[i] for i, x in enumerate(self.outs) if x]
-        self.in_roads = [self.roads[i] for i, x in enumerate(self.outs) if not x]  # TODO: check if its 4
+        self.in_roads = [self.roads[i] for i, x in enumerate(self.outs) if not x]  # old todo was here - check if its 4
 
     
-    # TODO: revert x and y
+    # old todo was here - revert x and y
     def _get_direction(self, road, out=True):
         if out:
             x = road[1][0] - road[0][0]
@@ -556,7 +556,7 @@ class parse_sumo_config(): # Does static information extraction affect parallel 
                 dtype=np.float32
             )
         if 'final_year_project' in algorithm_name.lower() or 'fyp' in algorithm_name.lower():
-            # Dynamic format: phase(N_phases) + N_in_lanes × 5 features # TODO: change to be what we end up picking
+            # Dynamic format: state space changes depending what is used please EDIT ob_length with the TODO:
             # Number of lanes is determined by the network, not hardcoded
             num_phases   = len(self.green_phases[tl_id])
             num_in_lanes = sum(len(lanes) for lanes in tl_info['lanes_road_observed_in_only'])
@@ -879,7 +879,7 @@ class World(parse_sumo_config, gym.Env):
         self.net = self.get_net_file_address()
         self.RIGHT = True
         
-        # self.step_ratio = 1  # TODO: register in Registry later
+        # self.step_ratio = 1  # old todo was here -  register in Registry later
         # self.step_length = 1  # should be 1 in our setting, how much duration time in sim per step
         # self.sim_max_steps = 1000
         self.sim_max_steps = kwargs.get('sim_max_steps', 1000)
@@ -1333,7 +1333,7 @@ class World(parse_sumo_config, gym.Env):
     # ====================================================================================
 
     def _update_infos(self):
-        # TODO: add normalization value in the info_functions
+        # old todo was here -  add normalization value in the info_functions
         self.info_dynamics_real_time = {}
         self.info_functions = {
             "time": self.get_current_time,
@@ -1478,14 +1478,14 @@ class World(parse_sumo_config, gym.Env):
         '''
         
         if self.step_counter != 0:
-            # TODO: set trip info output
+            # old todo was here -  set trip info output
             self.close()
         # =============================================
 
         self.vehicles_trip_time = dict()
         self.ev_lane_entry_time = {} # {veh_id: (lane_id, entry_time)} - NEW FOR FYP
         self.vehicles_entering_time = dict()
-        # TODO: check when to close traci
+        # old todo was here - check when to close traci
         if self.interface_flag:
             libsumo.start(self.sumo_cmd)
             self.eng = libsumo
@@ -1547,13 +1547,13 @@ class World(parse_sumo_config, gym.Env):
                 intsec.time_since_last_phase_change = intsec.yellow_phase_time
         # Initialize variables without performing step-level statistics
         self._update_infos()
-        # TODO: check if its the problem
+        # old todo was here - check if its the problem
         
         
         self.vehicle_trajectory = {}
         self.vehicle_maxspeed = {}
         self.real_delay= {}
-        # TODO:compute initial observations
+        # old todo was here - compute initial observations
         return self._get_observations()
     
     def _get_observations(self):
@@ -1975,7 +1975,7 @@ class Intersection():
         self.startlanes: list[str] = [] # represents all entry lane ids of the whole intersection
         self.phase_available_lanelinks: dict[int, list[tuple[str, str]]] = {}
         
-        # TODO: 以下注释代码可考虑静态获取
+        # old todo was here: - 以下注释代码可考虑静态获取
         # # 在循环外获取一次连接数据
         # all_links = self.eng.trafficlight.getControlledLinks(self.id) # repeated call for line 282
         # for p_idx, phase in enumerate(self.green_phases): # 遍历你的绿灯相位
@@ -2022,7 +2022,7 @@ class Intersection():
         self.last_step_vehicles = None
         # 🔧 新增：跟踪每辆车在当前路口各车道的等待时间
         self.lane_vehicle_waiting_times = {}  # {lane: {vehicle_id: waiting_time}}
-        # TODO: check .signals .full_observation .last_stet_vehicles need to be set or not
+        # - old todo was here check .signals .full_observation .last_stet_vehicles need to be set or not
         
         # ===========================observation action and reward===================================
         # self.obs_to_subscribe = obs_to_subscribe
@@ -2147,7 +2147,7 @@ class Intersection():
     #==========================original objective traffic state statistics===========================
     def collect_objective_traffic_state(self, max_distance, step_length=1):
         '''
-        # TODO: para step_length can be discarded
+        # - old todo was here para step_length can be discarded
         collect_objective_traffic_state
         Get observation of the whole roadnet, including lane_waiting_time_count, lane_waiting_count, lane_count and queue_length.
         
@@ -2229,7 +2229,7 @@ class Intersection():
         :param max_distance: distance limitation that it can only get vehicles which are within the length of the lane
         :return detectable: number of vehicles
         '''
-        # # TODO: reduce complexity -> find all vehicles within max_distance and on this lane
+        # old todo was here - reduce complexity -> find all vehicles within max_distance and on this lane
         # detectable = []
         # for v in self.eng.lane.getLastStepVehicleIDs(lane):
         #     path = self.eng.vehicle.getNextTLS(v)
@@ -2263,7 +2263,7 @@ class Intersection():
         return detectable
 
 # ========================================================================
-# TODO: reward computation, action space, observation space design
+# - old todo was here reward computation, action space, observation space design
 # multi-agent environment design question: should reward belong to intersection level?
 # =========obeservation, reward and done compute=============================================
     def get_observation(self):
