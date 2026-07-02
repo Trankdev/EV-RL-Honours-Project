@@ -450,12 +450,23 @@ class Observation(ObservationFunction):
         # Switch this one line to flip between the two — obs length is unchanged either way.
         EV_DELAY_METRIC_MODE = 'delay_ratio'  # options: 'delay_ratio', 'waiting_time' # TODO: pick if you want EV Delay Ratio or EV Waiting time used
         
-        # Toggle EV ETA/urgency feature on or off.
-        # Remember to update ob_length in env.py if you change this (adds/removes 1 dim).
-        USE_EV_ETA_URGENCY = True # TODO: set 'True' if want to use this feature, set 'False' if do NOT want to use it (want it excluded) - remember to reduce the state size in env.py if changing this
+        # Toggle which EV urgency representation feeds the observation.
+        # Mutually exclusive by design — TTA is itself derived from speed+distance,
+        # so mixing TTA with speed/distance would be redundant rather than a clean ablation.
+        # Obs length varies by mode:
+        #   'tta'            -> +1 dim (EV ETA/urgency)
+        #   'speed'          -> +1 dim (EV speed / free-flow speed)
+        #   'distance'       -> +1 dim (distance remaining to intersection / lane length)
+        #   'speed_distance' -> +2 dims (both of the above)
+        #   'none'           -> +0 dims
+        # Remember to update ob_length in env.py to match whichever mode you pick.
+        EV_URGENCY_MODE = 'tta'  # options: 'tta', 'speed', 'distance', 'speed_distance', 'none' # TODO: pick what you want to use to inform how close an EV is to an intersection / measure of urgency
 
         ev_delay_metric = 0.0
+        
         ev_eta = 0.0
+        ev_speed_norm = 0.0
+        ev_distance_norm = 0.0
 
         # Scan all lanes once to find the closest EV (by distance to this intersection)
         best_distance = float('inf')
@@ -503,8 +514,8 @@ class Observation(ObservationFunction):
                         ev_delay_metric = max(0.0, min(ev_delay_ratio, 1.0))
                 except Exception:
                     ev_delay_metric = 0.0
-
-            if USE_EV_ETA_URGENCY:
+            
+            if EV_URGENCY_MODE == 'tta':
                 try:
                     next_tls = eng.vehicle.getNextTLS(ev_found_id)
                     if next_tls:
@@ -520,9 +531,42 @@ class Observation(ObservationFunction):
                 except Exception:
                     ev_eta = 0.0
 
+            if EV_URGENCY_MODE in ('speed', 'speed_distance'):
+                try:
+                    current_speed = eng.vehicle.getSpeed(ev_found_id)
+                    lane_max_speed = eng.lane.getMaxSpeed(ev_found_lane)
+                    if lane_max_speed > 0:
+                        # 1 = stopped/crawling (urgent), 0 = free-flowing (fine) — matches "no EV" default
+                        ev_speed_norm = 1.0 - max(0.0, min(current_speed / lane_max_speed, 1.0))
+                    else:
+                        ev_speed_norm = 0.0
+                except Exception:
+                    ev_speed_norm = 0.0
+
+            if EV_URGENCY_MODE in ('distance', 'speed_distance'):
+                try:
+                    lane_length = eng.lane.getLength(ev_found_lane)
+                    if lane_length > 0:
+                        dist_to_stop = lane_length - ev_found_position
+                        # 1 = at the stop line (urgent), 0 = just entered / far away (fine) — matches "no EV" default
+                        ev_distance_norm = 1.0 - max(0.0, min(dist_to_stop / lane_length, 1.0))
+                    else:
+                        ev_distance_norm = 0.0
+                except Exception:
+                    ev_distance_norm = 0.0
+        
         obs.append(ev_delay_metric)
-        if USE_EV_ETA_URGENCY:
+        
+        if EV_URGENCY_MODE == 'tta':
             obs.append(ev_eta)
+        elif EV_URGENCY_MODE == 'speed':
+            obs.append(ev_speed_norm)
+        elif EV_URGENCY_MODE == 'distance':
+            obs.append(ev_distance_norm)
+        elif EV_URGENCY_MODE == 'speed_distance':
+            obs.append(ev_speed_norm)
+            obs.append(ev_distance_norm)
+        # 'none' -> nothing appended
     
         # 4. Per-lane features (4 each)
         for lane_idx, lane_id in enumerate(flat_lanes):
@@ -541,7 +585,7 @@ class Observation(ObservationFunction):
     
             # Toggle which lane-fullness metric feeds Feature 1.
             # Switch this one line to flip between the two — obs length is unchanged either way.
-            FEATURE1_MODE = 'fixed_17_baseline'  # options: 'fixed_17_baseline', 'lane_capacity_occupancy' # TODO: pick if you want the fixed /17 count or per-lane capacity ('lane_capacity_occupancy') occupancy used
+            FEATURE1_MODE = 'lane_capacity_occupancy'  # options: 'fixed_17_baseline', 'lane_capacity_occupancy' # TODO: pick if you want the fixed /17 count or per-lane capacity ('lane_capacity_occupancy') occupancy used
 
             if FEATURE1_MODE == 'lane_capacity_occupancy':
                 # Lane Occupancy - how full a lane is from [0, 1] - vehicle count / lane capacity (capacity = lane_length / vehicle_size_min_gap)
