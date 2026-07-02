@@ -445,21 +445,50 @@ class Observation(ObservationFunction):
         ev_found_lane = None
         ev_found_position = None
         ev_found_waiting_time = None
-    
+
         # Toggle which EV congestion metric feeds the observation.
         # Switch this one line to flip between the two — obs length is unchanged either way.
-        EV_METRIC_MODE = 'delay_ratio'  # options: 'delay_ratio', 'waiting_time' # TODO: pick if you want EV Delay Ratio or EV Waiting time used
+        EV_DELAY_METRIC_MODE = 'delay_ratio'  # options: 'delay_ratio', 'waiting_time' # TODO: pick if you want EV Delay Ratio or EV Waiting time used
+        
+        # Toggle EV ETA/urgency feature on or off.
+        # Remember to update ob_length in env.py if you change this (adds/removes 1 dim).
+        USE_EV_ETA_URGENCY = True # TODO: set 'True' if want to use this feature, set 'False' if do NOT want to use it (want it excluded) - remember to reduce the state size in env.py if changing this
 
-        ev_metric = 0.0
+        ev_delay_metric = 0.0
+        ev_eta = 0.0
 
-        if ev_found_id is not None:
-            if EV_METRIC_MODE == 'waiting_time':
+        # Scan all lanes once to find the closest EV (by distance to this intersection)
+        best_distance = float('inf')
+        for lane_id in flat_lanes:
+            if lane_id == 'dummy':
+                continue
+            try:
+                vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+            except Exception:
+                continue
+            for veh_id in vehicle_ids:
                 try:
-                    ev_metric = min(ev_found_waiting_time / 100.0, 1.0)
+                    veh_type = eng.vehicle.getTypeID(veh_id)
+                    if veh_type not in ('ambulance_type', 'emergency'):
+                        continue
+                    next_tls = eng.vehicle.getNextTLS(veh_id)
+                    distance = next_tls[0][2] if next_tls else float('inf')
+                    if distance < best_distance:
+                        best_distance = distance
+                        ev_found_id = veh_id
+                        ev_found_lane = lane_id
+                        ev_found_position = eng.vehicle.getLanePosition(veh_id)
+                        ev_found_waiting_time = eng.vehicle.getAccumulatedWaitingTime(veh_id)
                 except Exception:
-                    ev_metric = 0.0
-
-            elif EV_METRIC_MODE == 'delay_ratio':
+                    continue
+        
+        if ev_found_id is not None:
+            if EV_DELAY_METRIC_MODE == 'waiting_time':
+                try:
+                    ev_delay_metric = min(ev_found_waiting_time / 100.0, 1.0)
+                except Exception:
+                    ev_delay_metric = 0.0
+            elif EV_DELAY_METRIC_MODE == 'delay_ratio':
                 try:
                     current_time = self.world.get_current_time()
                     if ev_found_id in self.world.ev_lane_entry_time:
@@ -467,34 +496,33 @@ class Observation(ObservationFunction):
                         actual_travel_time = current_time - entry_time
                     else:
                         actual_travel_time = 0.0
-
                     lane_max_speed = eng.lane.getMaxSpeed(ev_found_lane)
-
                     if lane_max_speed > 0 and ev_found_position > 0 and actual_travel_time > 0:
                         free_flow_time = ev_found_position / lane_max_speed
                         ev_delay_ratio = 1.0 - (free_flow_time / max(actual_travel_time, free_flow_time))
-                        ev_metric = max(0.0, min(ev_delay_ratio, 1.0))
+                        ev_delay_metric = max(0.0, min(ev_delay_ratio, 1.0))
                 except Exception:
-                    ev_metric = 0.0
+                    ev_delay_metric = 0.0
 
-            # EV ETA urgency
-            try:
-                next_tls = eng.vehicle.getNextTLS(ev_found_id)
-                if next_tls:
-                    distance = next_tls[0][2]
-                    current_speed = eng.vehicle.getSpeed(ev_found_id)
-                    if current_speed > 0.5:
-                        eta = distance / current_speed
-                        ev_eta = 1.0 - min(eta / 60.0, 1.0)
+            if USE_EV_ETA_URGENCY:
+                try:
+                    next_tls = eng.vehicle.getNextTLS(ev_found_id)
+                    if next_tls:
+                        distance = next_tls[0][2]
+                        current_speed = eng.vehicle.getSpeed(ev_found_id)
+                        if current_speed > 0.5:
+                            eta = distance / current_speed
+                            ev_eta = 1.0 - min(eta / 60.0, 1.0)
+                        else:
+                            ev_eta = 1.0
                     else:
-                        ev_eta = 1.0
-                else:
+                        ev_eta = 0.0
+                except Exception:
                     ev_eta = 0.0
-            except Exception:
-                ev_eta = 0.0
 
-        obs.append(ev_metric)
-        obs.append(ev_eta)
+        obs.append(ev_delay_metric)
+        if USE_EV_ETA_URGENCY:
+            obs.append(ev_eta)
     
         # 4. Per-lane features (4 each)
         for lane_idx, lane_id in enumerate(flat_lanes):
@@ -513,9 +541,9 @@ class Observation(ObservationFunction):
     
             # Toggle which lane-fullness metric feeds Feature 1.
             # Switch this one line to flip between the two — obs length is unchanged either way.
-            FEATURE1_MODE = 'fixed_17-baseline'  # options: 'fixed_17', 'lane_capacity' # TODO: pick if you want the fixed /17 count or per-lane capacity ('lane_capacity') occupancy used
+            FEATURE1_MODE = 'fixed_17_baseline'  # options: 'fixed_17_baseline', 'lane_capacity_occupancy' # TODO: pick if you want the fixed /17 count or per-lane capacity ('lane_capacity_occupancy') occupancy used
 
-            if FEATURE1_MODE == 'lane_capacity':
+            if FEATURE1_MODE == 'lane_capacity_occupancy':
                 # Lane Occupancy - how full a lane is from [0, 1] - vehicle count / lane capacity (capacity = lane_length / vehicle_size_min_gap)
                 feature1 = min(len(vehicles_info) / self._lane_capacities[lane_idx], 1.0)
             else:
@@ -540,7 +568,7 @@ class Observation(ObservationFunction):
             feature4 = self._compute_outgoing_attention_for_lane_new(lane_id)
     
             obs.extend([feature1, feature2, feature3, feature4])
-    
+            
         return np.array(obs, dtype=np.float32)
     
     ###########################################################################
