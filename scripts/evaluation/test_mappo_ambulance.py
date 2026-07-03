@@ -59,6 +59,7 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
         aid: {
             'reg_group1_mean': 0.0, 'reg_group1_std': 0.0,
             'reg_group2_mean': 0.0, 'reg_group2_std': 0.0,
+            'reg_all_mean': 0.0, 'reg_all_std': 0.0,
             'emg_mean': 0.0, 'emg_std': 0.0,
         } for aid in agent_ids
     }
@@ -66,6 +67,7 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
     global_sums = {
         'reg_group1_mean': 0.0, 'reg_group1_std': 0.0,
         'reg_group2_mean': 0.0, 'reg_group2_std': 0.0,
+        'reg_all_mean': 0.0, 'reg_all_std': 0.0,
         'emg_mean': 0.0, 'emg_std': 0.0,
     }
     stat_steps = 0
@@ -89,9 +91,9 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
 
             # per-group lists gathered across all agents THIS step, used to
             # build the pooled/global stat for this step
-            step_counts  = {'reg_group1': [], 'reg_group2': [], 'emg': []}
-            step_means   = {'reg_group1': [], 'reg_group2': [], 'emg': []}
-            step_stds    = {'reg_group1': [], 'reg_group2': [], 'emg': []}
+            step_counts  = {'reg_group1': [], 'reg_group2': [], 'reg_all': [], 'emg': []}
+            step_means   = {'reg_group1': [], 'reg_group2': [], 'reg_all': [], 'emg': []}
+            step_stds    = {'reg_group1': [], 'reg_group2': [], 'reg_all': [], 'emg': []}
 
             for aid in agent_ids:
                 ts    = world.id2intersection[aid]
@@ -101,11 +103,14 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
                 per_agent_sums[aid]['reg_group1_std']  += stats['regular_group1_vehicles']['std_waiting']
                 per_agent_sums[aid]['reg_group2_mean'] += stats['regular_group2_vehicles']['mean_waiting']
                 per_agent_sums[aid]['reg_group2_std']  += stats['regular_group2_vehicles']['std_waiting']
+                per_agent_sums[aid]['reg_all_mean']     += stats['regular_vehicles']['mean_waiting']
+                per_agent_sums[aid]['reg_all_std']      += stats['regular_vehicles']['std_waiting']
                 per_agent_sums[aid]['emg_mean']         += stats['emergency_vehicles']['mean_waiting']
                 per_agent_sums[aid]['emg_std']          += stats['emergency_vehicles']['std_waiting']
 
                 for key, group in (('reg_group1', 'regular_group1_vehicles'),
                                     ('reg_group2', 'regular_group2_vehicles'),
+                                    ('reg_all', 'regular_vehicles'),
                                     ('emg', 'emergency_vehicles')):
                     step_counts[key].append(stats[group]['count'])
                     step_means[key].append(stats[group]['mean_waiting'])
@@ -117,7 +122,7 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
             # concatenating every vehicle's waiting time across intersections
             # and computing mean/std over the pooled set), and it's O(n_agents)
             # cheap arithmetic - no extra traci calls beyond the per-agent ones above.
-            for key in ('reg_group1', 'reg_group2', 'emg'):
+            for key in ('reg_group1', 'reg_group2', 'reg_all', 'emg'):
                 counts = step_counts[key]
                 total_n = sum(counts)
                 if total_n > 0:
@@ -154,6 +159,8 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
                 'reg_group1_waiting_std':  s['reg_group1_std']  / stat_steps,
                 'reg_group2_waiting_mean': s['reg_group2_mean'] / stat_steps,
                 'reg_group2_waiting_std':  s['reg_group2_std']  / stat_steps,
+                'reg_all_waiting_mean': s['reg_all_mean'] / stat_steps,
+                'reg_all_waiting_std':  s['reg_all_std']  / stat_steps,
                 'emg_waiting_mean': s['emg_mean'] / stat_steps,
                 'emg_waiting_std':  s['emg_std']  / stat_steps,
             }
@@ -162,6 +169,8 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
             'reg_group1_waiting_std':  global_sums['reg_group1_std']  / stat_steps,
             'reg_group2_waiting_mean': global_sums['reg_group2_mean'] / stat_steps,
             'reg_group2_waiting_std':  global_sums['reg_group2_std']  / stat_steps,
+            'reg_all_waiting_mean': global_sums['reg_all_mean'] / stat_steps,
+            'reg_all_waiting_std':  global_sums['reg_all_std']  / stat_steps,
             'emg_waiting_mean': global_sums['emg_mean'] / stat_steps,
             'emg_waiting_std':  global_sums['emg_std']  / stat_steps,
         }
@@ -169,6 +178,7 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
         empty = {
             'reg_group1_waiting_mean': 0.0, 'reg_group1_waiting_std': 0.0,
             'reg_group2_waiting_mean': 0.0, 'reg_group2_waiting_std': 0.0,
+            'reg_all_waiting_mean': 0.0, 'reg_all_waiting_std': 0.0,
             'emg_waiting_mean': 0.0, 'emg_waiting_std': 0.0,
         }
         per_intersection_stats = {aid: dict(empty) for aid in agent_ids}
@@ -294,9 +304,9 @@ def test_model(
     sumo_cfg = {
         "name":             "test_mappo_emergency_ambulance", # was 'test_emergency_ambulance' historically
         "dir":              scenario_dir,
-        "roadnetFile":      "3_intersection_corridor.net.xml",
-        "flowFile":         "vtypes.rou.xml,3_intersection_corridor_1800.rou.xml,ambulance_var1.rou.xml", # TODO: Scenarios: Check right network and demand files are used (also check right scenario folder is used in other places)
-        "combined_file":    "3_intersection_corridor.sumocfg",
+        "roadnetFile":      "3_intersection_corridor_250long.net.xml",
+        "flowFile":         "vtypes.rou.xml,3_intersection_corridor_250long_1800.rou.xml,ambulance_var1.rou.xml", # TODO: Scenarios: Check right network and demand files are used (also check right scenario folder is used in other places)
+        "combined_file":    "3_intersection_corridor_250long.sumocfg",
         "gui":              True, # Forces GUI on if set to 'True' otherwise set to 'gui' variable
         "no_warning":       True,
         "decision_interval": 5,
@@ -318,7 +328,7 @@ def test_model(
         "sync_mode":             True,
         "obs_to_subscribe":      config['algorithm']['observation']['obs_to_subscribe'],
         "reward_to_subscribe":   config['algorithm']['reward']['reward_to_subscribe'],
-        "algorithm_name":        "project1_std_dqn",   # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
+        "algorithm_name":        "final_year_project",   # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
         "normalize_observation": config['algorithm']['observation'].get('normalize', False),
         "norm_params":           config['algorithm']['observation'].get('norm_params', {}),
         "reward_weights":        config['algorithm']['reward'].get('reward_weights', [1.0]),
@@ -378,9 +388,10 @@ def test_model(
     print("=" * 70)
     if algorithm_name == "project1_std_dqn":
         print("\nUsing BASELINE RL (Kodogoda-style) observation/state space\n")
-        
     elif algorithm_name == "final_year_project":
         print("\nUsing FINAL YEAR PROJECT observation/state space\n")
+    elif algorithm_name == "final_year_project_lane_mode":
+         print("\nUsing FINAL YEAR PROJECT !LANE! VERSION observation/state space\n")
     else:
         print(f"\nPotential algorithm name mismatch: {algorithm_name}\n")
     print("=" * 70)
@@ -412,7 +423,6 @@ def test_model(
               f"reg_group2_wait={result['reg_group2_waiting_mean']:.1f}s | "
               f"reg_group2_std={result['reg_group2_waiting_std']:.1f}s | "
               f"emg_wait={result['emg_waiting_mean']:.1f}s | "
-              f"emg_std={result['emg_waiting_std']:.1f}s | "
               f"steps={result['steps']}")
 
         env.close()
@@ -436,21 +446,28 @@ def test_model(
         rg1s_m, rg1s_s = _stats(f'{prefix}reg_group1_waiting_std')
         rg2m_m, rg2m_s = _stats(f'{prefix}reg_group2_waiting_mean')
         rg2s_m, rg2s_s = _stats(f'{prefix}reg_group2_waiting_std')
+        ram_m,  ram_s  = _stats(f'{prefix}reg_all_waiting_mean')
+        ras_m,  ras_s  = _stats(f'{prefix}reg_all_waiting_std')
         egm_m,  egm_s  = _stats(f'{prefix}emg_waiting_mean')
         egs_m,  egs_s  = _stats(f'{prefix}emg_waiting_std')
         print(f"  {title}")
         print(f"    EMG wait mean             : {egm_m:8.2f}s +/- {egm_s:.2f}s") # these metrics are all matching what the title says - focus intersection is just one isolated intersection (for ID in brackets), while global is all intersections - avg.
-        print(f"    EMG wait std              : {egs_m:8.2f}s +/- {egs_s:.2f}s")
+        print(f"    EMG wait std dev          : {egs_m:8.2f}s +/- {egs_s:.2f}s")
         print(f"    Regular Group 1 wait mean : {rg1m_m:8.2f}s +/- {rg1m_s:.2f}s") 
         print(f"    Regular Group 1 wait std  : {rg1s_m:8.2f}s +/- {rg1s_s:.2f}s")
         print(f"    Regular Group 2 wait mean : {rg2m_m:8.2f}s +/- {rg2m_s:.2f}s")
         print(f"    Regular Group 2 wait std  : {rg2s_m:8.2f}s +/- {rg2s_s:.2f}s")
+        print(f"    Regular (all) wait mean   : {ram_m:8.2f}s +/- {ram_s:.2f}s")
+        print(f"    Regular (all) wait std    : {ras_m:8.2f}s +/- {ras_s:.2f}s")
         return {
             'reg_group1_waiting_mean_mean': rg1m_m, 'reg_group1_waiting_mean_std': rg1m_s,
             'reg_group1_waiting_std_mean':  rg1s_m, 'reg_group1_waiting_std_std':  rg1s_s,
             'reg_group2_waiting_mean_mean': rg2m_m, 'reg_group2_waiting_mean_std': rg2m_s,
             'reg_group2_waiting_std_mean':  rg2s_m, 'reg_group2_waiting_std_std':  rg2s_s,
-            'emg_waiting_mean_mean': egm_m, 'emg_waiting_mean_std': egm_s,            'emg_waiting_std_mean': egs_m, 'emg_waiting_std_std': egs_s,        }
+            'reg_all_waiting_mean_mean': ram_m, 'reg_all_waiting_mean_std': ram_s,
+            'reg_all_waiting_std_mean':  ras_m, 'reg_all_waiting_std_std':  ras_s,
+            'emg_waiting_mean_mean': egm_m, 'emg_waiting_mean_std': egm_s,
+        }
 
     focus_aid = all_results[0]['focus_agent_id'] if all_results else None
 
@@ -479,7 +496,7 @@ def test_model(
     summary = {
         'model_path':            model_path,
         'config_path':           config_path,
-        'algorithm_name_env':    'project1_std_dqn', # TODO: MAY? affect what Observation state space is being used (not 100% sure) - change this to be fyp or final_year_project for FYP model OR project1_std_dqn for baseline model
+        'algorithm_name_env':    'final_year_project', # TODO: MAY? affect what Observation state space is being used (not 100% sure) - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
         'Z':                     Z,
         'num_episodes':          num_episodes,
         'deterministic':         deterministic,
@@ -539,14 +556,14 @@ Examples:
 """)
     
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/mappo_ambulance_K0.5_Z3.0_seed42_20260703_150941/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
+                        default='experiments/7.FYPInt_EVSpeed_EVDist_3Inter250_1800_mappo_ambulance_K0.5_Z3.0_seed42_20260703_140250/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
                         help='Path to the .pt model checkpoint')
     
     parser.add_argument('--config', type=str,
                         default='configs/tsc/mappo_ambulance.yaml', # TODO: Rewards: Factors (e.g. Z and K) for the reward are taken from this - should align with reward being used - from configs/tsc folder - mappo_ambulance for BASELINE, mappo_fyp_config for FYP
                         help='YAML config used during training (default: configs/tsc/mappo_fyp_config.yaml)')
     parser.add_argument('--scenario-dir', type=str,
-                        default='scenarios/3_intersection_corridor', # change to scenario to be tested on
+                        default='scenarios/3_intersection_corridor_250long', # change to scenario to be tested on
                         help='SUMO scenario directory')
 
     # Z override
