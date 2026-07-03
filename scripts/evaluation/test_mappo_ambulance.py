@@ -467,6 +467,7 @@ def test_model(
             'reg_all_waiting_mean_mean': ram_m, 'reg_all_waiting_mean_std': ram_s,
             'reg_all_waiting_std_mean':  ras_m, 'reg_all_waiting_std_std':  ras_s,
             'emg_waiting_mean_mean': egm_m, 'emg_waiting_mean_std': egm_s,
+            'emg_waiting_std_mean':  egs_m, 'emg_waiting_std_std':  egs_s,
         }
 
     focus_aid = all_results[0]['focus_agent_id'] if all_results else None
