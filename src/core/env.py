@@ -555,18 +555,33 @@ class parse_sumo_config(): # Does static information extraction affect parallel 
                 high=np.ones(ob_length, dtype=np.float32),
                 dtype=np.float32
             )
-        if 'final_year_project' in algorithm_name.lower() or 'fyp' in algorithm_name.lower():
+        
+        if 'final_year_project_lane_mode' in algorithm_name.lower() or 'fyp_lane' in algorithm_name.lower():
             # Dynamic format: state space changes depending what is used please EDIT ob_length with the TODO:
             # Number of lanes is determined by the network, not hardcoded
             num_phases   = len(self.green_phases[tl_id])
             num_in_lanes = sum(len(lanes) for lanes in tl_info['lanes_road_observed_in_only'])
-            ob_length    = 2 + num_phases + num_in_lanes * 4 # TODO: will need to adjust to match observation space length
+            ob_length    = num_phases + num_in_lanes * 5 # TODO: will need to adjust to match observation space length
 
             return gym.spaces.Box(
                 low=np.zeros(ob_length, dtype=np.float32),
                 high=np.ones(ob_length, dtype=np.float32),
                 dtype=np.float32
             )
+        
+        if 'final_year_project' in algorithm_name.lower() or 'fyp' in algorithm_name.lower():
+            # Dynamic format: state space changes depending what is used please EDIT ob_length with the TODO:
+            # Number of lanes is determined by the network, not hardcoded
+            num_phases   = len(self.green_phases[tl_id])
+            num_in_lanes = sum(len(lanes) for lanes in tl_info['lanes_road_observed_in_only'])
+            ob_length    = 3 + num_phases + num_in_lanes * 4 # TODO: will need to adjust to match observation space length
+        
+            return gym.spaces.Box(
+                low=np.zeros(ob_length, dtype=np.float32),
+                high=np.ones(ob_length, dtype=np.float32),
+                dtype=np.float32
+            )
+
         if use_presslight:
             # PressLight mode: incoming lanes × 3 + outgoing lanes × 1
             num_in_lanes = sum(len(x) for x in tl_info['lanes_road_observed_in_only'])
