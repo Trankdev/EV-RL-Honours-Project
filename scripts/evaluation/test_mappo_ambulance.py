@@ -7,7 +7,7 @@ Key differences vs test_parl_mappo.py:
     68-dim project1-std observation and the std-aware EMV reward.
   - Injects Z into GetRewards.REWARD_CONFIGS at startup so the reward
     values printed match the training objective.
-  - Reports per-episode reg/emg waiting-time statistics (mean + std).
+  - Reports per-episode reg/emg waiting-time statistics (mean + std). 
   - Reads Z from the saved exp_config.json (when available) so you don't
     have to remember the exact values used during training.
 """
