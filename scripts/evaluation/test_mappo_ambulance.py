@@ -7,7 +7,7 @@ Key differences vs test_parl_mappo.py:
     68-dim project1-std observation and the std-aware EMV reward.
   - Injects Z into GetRewards.REWARD_CONFIGS at startup so the reward
     values printed match the training objective.
-  - Reports per-episode reg/emg waiting-time statistics (mean + std). 
+  - Reports per-episode reg/emg waiting-time statistics (mean + std).
   - Reads Z from the saved exp_config.json (when available) so you don't
     have to remember the exact values used during training.
 """
@@ -412,6 +412,7 @@ def test_model(
               f"reg_group2_wait={result['reg_group2_waiting_mean']:.1f}s | "
               f"reg_group2_std={result['reg_group2_waiting_std']:.1f}s | "
               f"emg_wait={result['emg_waiting_mean']:.1f}s | "
+              f"emg_std={result['emg_waiting_std']:.1f}s | "
               f"steps={result['steps']}")
 
         env.close()
@@ -436,8 +437,10 @@ def test_model(
         rg2m_m, rg2m_s = _stats(f'{prefix}reg_group2_waiting_mean')
         rg2s_m, rg2s_s = _stats(f'{prefix}reg_group2_waiting_std')
         egm_m,  egm_s  = _stats(f'{prefix}emg_waiting_mean')
+        egs_m,  egs_s  = _stats(f'{prefix}emg_waiting_std')
         print(f"  {title}")
         print(f"    EMG wait mean             : {egm_m:8.2f}s +/- {egm_s:.2f}s") # these metrics are all matching what the title says - focus intersection is just one isolated intersection (for ID in brackets), while global is all intersections - avg.
+        print(f"    EMG wait std              : {egs_m:8.2f}s +/- {egs_s:.2f}s")
         print(f"    Regular Group 1 wait mean : {rg1m_m:8.2f}s +/- {rg1m_s:.2f}s") 
         print(f"    Regular Group 1 wait std  : {rg1s_m:8.2f}s +/- {rg1s_s:.2f}s")
         print(f"    Regular Group 2 wait mean : {rg2m_m:8.2f}s +/- {rg2m_s:.2f}s")
@@ -447,8 +450,7 @@ def test_model(
             'reg_group1_waiting_std_mean':  rg1s_m, 'reg_group1_waiting_std_std':  rg1s_s,
             'reg_group2_waiting_mean_mean': rg2m_m, 'reg_group2_waiting_mean_std': rg2m_s,
             'reg_group2_waiting_std_mean':  rg2s_m, 'reg_group2_waiting_std_std':  rg2s_s,
-            'emg_waiting_mean_mean': egm_m, 'emg_waiting_mean_std': egm_s,
-        }
+            'emg_waiting_mean_mean': egm_m, 'emg_waiting_mean_std': egm_s,            'emg_waiting_std_mean': egs_m, 'emg_waiting_std_std': egs_s,        }
 
     focus_aid = all_results[0]['focus_agent_id'] if all_results else None
 
@@ -537,7 +539,7 @@ Examples:
 """)
     
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/mappo_ambulance_K0.5_Z3.0_seed42_20260701_202729/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
+                        default='experiments/mappo_ambulance_K0.5_Z3.0_seed42_20260703_150941/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
                         help='Path to the .pt model checkpoint')
     
     parser.add_argument('--config', type=str,
