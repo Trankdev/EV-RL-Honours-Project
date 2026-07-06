@@ -147,6 +147,20 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
         if done:
             break
 
+    # Finalize any vehicles still in the sim at episode cutoff
+    world = env.env
+    world.finalize_stranded_vehicles()
+
+    def _vehicle_stats(lst):
+        if len(lst) == 0:
+            return 0.0, 0.0, 0
+        return float(np.mean(lst)), float(np.std(lst)), len(lst)
+
+    g1_mean, g1_std, g1_n   = _vehicle_stats(world.finished_reg_group1_delays)
+    g2_mean, g2_std, g2_n   = _vehicle_stats(world.finished_reg_group2_delays)
+    all_mean, all_std, all_n = _vehicle_stats(world.finished_reg_all_delays)
+    ev_mean, ev_std, ev_n   = _vehicle_stats(world.finished_ev_delays)
+
     # Episode-level averages: per-intersection, global (pooled), and the
     # single "focus" intersection (kept as top-level keys for backward compat)
     focus_aid = agent_ids[focus_agent_idx]
@@ -212,6 +226,11 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
             aid: {k: float(v) for k, v in d.items()}
             for aid, d in per_intersection_stats.items()
         },
+        # NEW: per-vehicle trip-total delay stats (the ones you actually want)
+        'group1_delay_mean': g1_mean, 'group1_delay_std': g1_std, 'group1_delay_n': g1_n,
+        'group2_delay_mean': g2_mean, 'group2_delay_std': g2_std, 'group2_delay_n': g2_n,
+        'all_reg_delay_mean': all_mean, 'all_reg_delay_std': all_std, 'all_reg_delay_n': all_n,
+        'ev_delay_mean': ev_mean, 'ev_delay_std': ev_std, 'ev_delay_n': ev_n,
     }
 
 
@@ -328,7 +347,7 @@ def test_model(
         "sync_mode":             True,
         "obs_to_subscribe":      config['algorithm']['observation']['obs_to_subscribe'],
         "reward_to_subscribe":   config['algorithm']['reward']['reward_to_subscribe'],
-        "algorithm_name":        "final_year_project",   # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
+        "algorithm_name":        "final_year_project_lane_mode",   # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
         "normalize_observation": config['algorithm']['observation'].get('normalize', False),
         "norm_params":           config['algorithm']['observation'].get('norm_params', {}),
         "reward_weights":        config['algorithm']['reward'].get('reward_weights', [1.0]),
@@ -434,55 +453,38 @@ def test_model(
         vals = [r[key] for r in all_results]
         return float(np.mean(vals)), float(np.std(vals))
 
-    avg_rew_mean,  avg_rew_std                = _stats('avg_reward')
-    amb_mean,      amb_std                    = _stats('ambulance_duration')
-    civ_mean,      civ_std                    = _stats('civilian_avg_trip_time')
-    steps_mean,    steps_std                  = _stats('steps')
+    avg_rew_mean,  avg_rew_std  = _stats('avg_reward')
+    amb_mean,      amb_std      = _stats('ambulance_duration')
+    civ_mean,      civ_std      = _stats('civilian_avg_trip_time')
+    steps_mean,    steps_std    = _stats('steps')
 
-    # focus intersection (backward-compatible keys) and global (pooled) metrics
-    # use the same _stats() helper, just pointed at the 'global_*' keys for the latter
-    def _print_table(title, prefix):
-        rg1m_m, rg1m_s = _stats(f'{prefix}reg_group1_waiting_mean')
-        rg1s_m, rg1s_s = _stats(f'{prefix}reg_group1_waiting_std')
-        rg2m_m, rg2m_s = _stats(f'{prefix}reg_group2_waiting_mean')
-        rg2s_m, rg2s_s = _stats(f'{prefix}reg_group2_waiting_std')
-        ram_m,  ram_s  = _stats(f'{prefix}reg_all_waiting_mean')
-        ras_m,  ras_s  = _stats(f'{prefix}reg_all_waiting_std')
-        egm_m,  egm_s  = _stats(f'{prefix}emg_waiting_mean')
-        egs_m,  egs_s  = _stats(f'{prefix}emg_waiting_std')
-        print(f"  {title}")
-        print(f"    EMG wait mean             : {egm_m:8.2f}s +/- {egm_s:.2f}s") # these metrics are all matching what the title says - focus intersection is just one isolated intersection (for ID in brackets), while global is all intersections - avg.
-        print(f"    EMG wait std dev          : {egs_m:8.2f}s +/- {egs_s:.2f}s")
-        print(f"    Regular Group 1 wait mean : {rg1m_m:8.2f}s +/- {rg1m_s:.2f}s") 
-        print(f"    Regular Group 1 wait std  : {rg1s_m:8.2f}s +/- {rg1s_s:.2f}s")
-        print(f"    Regular Group 2 wait mean : {rg2m_m:8.2f}s +/- {rg2m_s:.2f}s")
-        print(f"    Regular Group 2 wait std  : {rg2s_m:8.2f}s +/- {rg2s_s:.2f}s")
-        print(f"    Regular (all) wait mean   : {ram_m:8.2f}s +/- {ram_s:.2f}s")
-        print(f"    Regular (all) wait std    : {ras_m:8.2f}s +/- {ras_s:.2f}s")
-        return {
-            'reg_group1_waiting_mean_mean': rg1m_m, 'reg_group1_waiting_mean_std': rg1m_s,
-            'reg_group1_waiting_std_mean':  rg1s_m, 'reg_group1_waiting_std_std':  rg1s_s,
-            'reg_group2_waiting_mean_mean': rg2m_m, 'reg_group2_waiting_mean_std': rg2m_s,
-            'reg_group2_waiting_std_mean':  rg2s_m, 'reg_group2_waiting_std_std':  rg2s_s,
-            'reg_all_waiting_mean_mean': ram_m, 'reg_all_waiting_mean_std': ram_s,
-            'reg_all_waiting_std_mean':  ras_m, 'reg_all_waiting_std_std':  ras_s,
-            'emg_waiting_mean_mean': egm_m, 'emg_waiting_mean_std': egm_s,
-            'emg_waiting_std_mean':  egs_m, 'emg_waiting_std_std':  egs_s,
-        }
+    g1m_m, g1m_s   = _stats('group1_delay_mean')
+    g1s_m, g1s_s   = _stats('group1_delay_std')
+    g2m_m, g2m_s   = _stats('group2_delay_mean')
+    g2s_m, g2s_s   = _stats('group2_delay_std')
+    allm_m, allm_s = _stats('all_reg_delay_mean')
+    alls_m, alls_s = _stats('all_reg_delay_std')
+    evm_m, evm_s   = _stats('ev_delay_mean')
+    evs_m, evs_s   = _stats('ev_delay_std')
 
     focus_aid = all_results[0]['focus_agent_id'] if all_results else None
 
     print(f"\n{'='*80}")
-    print("Evaluation Summary")
+    print("Evaluation Summary  (mean +/- std. dev. across episodes, per-vehicle trip totals)")
     print(f"{'='*80}")
-    print(f"  Avg reward          : {avg_rew_mean:8.2f} +/- {avg_rew_std:.2f}") # averaged across all agents
-    print(f"  EMV trip time       : {amb_mean:8.2f}s +/- {amb_std:.2f}s") # is for whole network
-    print(f"  Civilian trip time  : {civ_mean:8.2f}s +/- {civ_std:.2f}s") # is for whole network
-    print(f"  Avg steps/episode   : {steps_mean:8.1f} +/- {steps_std:.1f}") # is episode related
+    print(f"  Avg. reward              : {avg_rew_mean:8.2f} +/- {avg_rew_std:.2f}")
+    print(f"  EV trip time         (s) : {amb_mean:8.2f} +/- {amb_std:.2f}")
+    print(f"  Civilian trip time   (s) : {civ_mean:8.2f} +/- {civ_std:.2f}")
+    print(f"  Avg steps/episode        : {steps_mean:8.1f} +/- {steps_std:.1f}")
     print()
-    focus_summary  = _print_table(f"Focus intersection ({focus_aid})", prefix='')
-    print()
-    global_summary = _print_table("Global (all intersections, averaged)", prefix='global_')
+    print(f"  EV delay (mean)      (s) : {evm_m:8.2f} +/- {evm_s:.2f}")
+    print(f"  EV delay (std. dev.) (s) : {evs_m:8.2f} +/- {evs_s:.2f}")
+    print(f"  Group 1 avg. delay   (s) : {g1m_m:8.2f} +/- {g1m_s:.2f}")
+    print(f"  Group 1 delay std.   (s) : {g1s_m:8.2f} +/- {g1s_s:.2f}")
+    print(f"  Group 2 avg. delay   (s) : {g2m_m:8.2f} +/- {g2m_s:.2f}")
+    print(f"  Group 2 delay std.   (s) : {g2s_m:8.2f} +/- {g2s_s:.2f}")
+    print(f"  All Reg. mean delay  (s) : {allm_m:8.2f} +/- {allm_s:.2f}")
+    print(f"  All Reg. delay std.  (s) : {alls_m:8.2f} +/- {alls_s:.2f}")
     print(f"{'='*80}\n")
 
     # per-intersection breakdown (mean over episodes for every intersection)
@@ -497,7 +499,7 @@ def test_model(
     summary = {
         'model_path':            model_path,
         'config_path':           config_path,
-        'algorithm_name_env':    'final_year_project', # TODO: MAY? affect what Observation state space is being used (not 100% sure) - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
+        'algorithm_name_env':    'final_year_project_lane_mode', # TODO: MAY? affect what Observation state space is being used (not 100% sure) - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
         'Z':                     Z,
         'num_episodes':          num_episodes,
         'deterministic':         deterministic,
@@ -512,10 +514,14 @@ def test_model(
         'civilian_time_std':     civ_std,
         'steps_mean':            steps_mean,
         'steps_std':             steps_std,
-        # focus-intersection waiting-time metrics (backward compatible names)
-        **focus_summary,
-        # NEW: global (all-intersection, count-weighted) waiting-time metrics
-        **{f'global_{k}': v for k, v in global_summary.items()},
+        'group1_delay_mean': g1m_m, 'group1_delay_std': g1m_s,
+        'group1_delay_std_mean': g1s_m, 'group1_delay_std_std': g1s_s,
+        'group2_delay_mean': g2m_m, 'group2_delay_std': g2m_s,
+        'group2_delay_std_mean': g2s_m, 'group2_delay_std_std': g2s_s,
+        'all_reg_delay_mean': allm_m, 'all_reg_delay_std': allm_s,
+        'all_reg_delay_std_mean': alls_m, 'all_reg_delay_std_std': alls_s,
+        'ev_delay_mean': evm_m, 'ev_delay_std': evm_s,
+        'ev_delay_std_mean': evs_m, 'ev_delay_std_std': evs_s,
         # NEW: per-intersection waiting-time metrics, keyed by agent_id
         'per_intersection_summary': per_intersection_summary,
         # per-episode detail
@@ -557,7 +563,7 @@ Examples:
 """)
     
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/7.FYPInt_EVSpeed_EVDist_3Inter250_1800_mappo_ambulance_K0.5_Z3.0_seed42_20260703_140250/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
+                        default='experiments/8.FYPLane_EVDlyRto_Occupncy_EVSpeed_EVDist_3Inter250_1800_mappo_ambulance_K0.5_Z3.0_seed42_20260704_152142/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
                         help='Path to the .pt model checkpoint')
     
     parser.add_argument('--config', type=str,
