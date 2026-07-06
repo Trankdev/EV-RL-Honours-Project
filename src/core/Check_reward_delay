@@ -1,0 +1,1422 @@
+"""rewards for traffic signals."""
+
+import numpy as np
+
+try:
+    from .Observations import ObservationFunction
+except ImportError:
+    from Observations import ObservationFunction
+
+
+class GetRewards(ObservationFunction):
+    """Reward function for traffic signals."""
+
+    REWARD_CONFIGS = {
+        'lane_waiting_count': {
+            'description': 'Number of waiting vehicles per lane',
+            'level': 'lane',
+            'use_difference': False,
+            'negative': True,
+            'scale': 1.0,
+            'clip_range': None
+        },
+
+        'lane_waiting_time_count': {
+            'description': 'Total waiting time per lane',
+            'level': 'lane',
+            'use_difference': False,
+            'negative': True,
+            'scale': 1.0,
+            'clip_range': None
+        },
+
+        'lane_vehicle_count': {
+            'description': 'Total number of vehicles per lane',
+            'level': 'lane',
+            'use_difference': False,
+            'negative': False,
+            'scale': 1.0,
+            'clip_range': None
+        },
+
+        'avg_waiting_time_per_vehicle': {
+            'description': 'Average waiting time per vehicle',
+            'level': 'intersection',
+            'use_difference': False,
+            'negative': True,
+            'scale': 1.0,
+            'clip_range': (-10.0, 0.0)
+        },
+
+        'pressure': {
+            'description': 'Pressure reward',
+            'level': 'intersection',
+            'negative': True,
+            'scale': 1.0,
+        },
+
+        'emergency_vehicle_priority': {
+            'description': 'Priority rewards for ambulances',
+            'level': 'intersection',
+            'negative': True,
+            'civilian_weight': 0.7,
+            'ambulance_penalty': 5000,
+            'ambulance_speed_threshold': 1.0,
+            'ambulance_type_id': 'ambulance_type',
+            'scale': 1.0,
+            'clip_range': None
+        },
+
+        'project1_std_reward': {
+            'description': 'project1_std_reward: 50 - (reg_mean + K*reg_std + Z*(emg_mean + K*emg_std))',
+            'level': 'intersection',
+            'negative': False,
+            'K': 0.5,
+            'Z': 1.0,
+            'base_reward': 50.0,
+            'scale': 1.0,
+            'clip_range': None,
+            'ambulance_type_ids': ['ambulance_type', 'emergency']
+        },
+
+        'final_year_project_reward': {
+            'description': 'FYP reward: weighted queue with EV lane weight',
+            'level': 'intersection',
+            'negative': False,
+
+            'K': 0.5,
+            'Z': 1.0,
+            'Y': 1.0,
+            'X': 1.0,
+            'base_reward': 50.0,
+            'scale': 1.0,
+            'clip_range': None,
+
+            'ambulance_type_ids': ['ambulance_type', 'emergency']
+        },
+    }
+
+    def __init__(self, ts, world, reward_to_subscribe, in_only=True, negative=True):
+        super().__init__(ts, world)
+
+        #######################################################################
+        # Local intersection lanes
+        #######################################################################
+
+        self.lanes_road_observed = []
+
+        if in_only:
+            roads = self.ts.in_roads
+        else:
+            roads = self.ts.roads
+
+        for r in roads:
+            if not self.world.RIGHT:
+                tmp = sorted(
+                    self.ts.road_lane_mapping[r],
+                    key=lambda ob: int(ob[-1]),
+                    reverse=True
+                )
+            else:
+                tmp = sorted(
+                    self.ts.road_lane_mapping[r],
+                    key=lambda ob: int(ob[-1])
+                )
+
+            self.lanes_road_observed.append(tmp)
+
+        #######################################################################
+        # Subscription
+        #######################################################################
+
+        if 'emergency_vehicle_priority' in reward_to_subscribe:
+            self.world.subscribe(['lane_waiting_time_count'])
+        else:
+            self.world.subscribe(reward_to_subscribe)
+
+        self.fns_subscribed = reward_to_subscribe
+        self.negative = negative
+        self.algorithm_name = getattr(world, '_algorithm_name', 'default')
+        self.last_rewards = {fn: None for fn in self.fns_subscribed}
+
+        #######################################################################
+        # Local intersection delay tracking for evaluation
+        #######################################################################
+
+        # Each GetRewards object belongs to one intersection.
+        # Therefore this accumulator stores LOCAL delay for this intersection.
+        self.local_delay_records = {}
+
+        # Used to reset local delay records when a new episode starts.
+        self.last_local_delay_sim_time = None
+
+    ###########################################################################
+    # Main reward selector
+    ###########################################################################
+
+    def compute_reward(self) -> float:
+        """
+        Compute reward with multiple algorithm-specific modes.
+
+        project1 / std_dqn:
+            uses old baseline reward.
+
+        final_year_project / fyp:
+            uses new weighted queue FYP reward.
+        """
+
+        name = self.algorithm_name.lower()
+
+        if 'project1' in name or 'std_dqn' in name:
+            return self._compute_project1_std_reward()
+
+        if 'final_year_project' in name or 'fyp' in name:
+            return self._compute_project1_std_reward_new()
+
+        print(
+            "The reward function is likely not being computed correctly. "
+            "Use 'project1_std_dqn' for baseline or 'final_year_project' / 'fyp' "
+            "for the FYP reward."
+        )
+
+        if 'emergency_vehicle_priority' in self.fns_subscribed:
+            return self._compute_emergency_priority_reward()
+
+        subscribed_results = [
+            self.world.info_dynamics_real_time[fn]
+            for fn in self.fns_subscribed
+        ]
+
+        if 'ma2c' in name:
+            return self._compute_ma2c_reward(subscribed_results)
+
+        return self._compute_default_reward(subscribed_results)
+
+    ###########################################################################
+    # Compatibility reward functions
+    ###########################################################################
+
+    def _compute_emergency_priority_reward(self):
+        """
+        Old emergency vehicle priority reward.
+
+        reward = -[(civilian_penalty * 0.7) + ambulance_penalty]
+        """
+        config = self.REWARD_CONFIGS['emergency_vehicle_priority']
+
+        waiting_time_result = self.world.info_dynamics_real_time.get(
+            'lane_waiting_time_count',
+            {}
+        )
+
+        civilian_penalty = 0.0
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                civilian_penalty += waiting_time_result.get(lane_id, 0.0)
+
+        ambulance_penalty = 0.0
+
+        try:
+            eng = self.world.eng
+            vehicle_list = eng.vehicle.getIDList()
+
+            ambulance_type = config['ambulance_type_id']
+            speed_threshold = config['ambulance_speed_threshold']
+            penalty_value = config['ambulance_penalty']
+
+            for veh_id in vehicle_list:
+                try:
+                    veh_type = eng.vehicle.getTypeID(veh_id)
+
+                    if veh_type == ambulance_type:
+                        speed = eng.vehicle.getSpeed(veh_id)
+
+                        if speed < speed_threshold:
+                            ambulance_penalty += penalty_value
+
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+
+        civilian_weight = config['civilian_weight']
+        raw_value = (civilian_penalty * civilian_weight) + ambulance_penalty
+
+        reward = -raw_value / config.get('scale', 1.0)
+
+        return float(reward)
+
+    def _compute_ma2c_reward(self, subscribed_results) -> float:
+        """
+        MA2C-style reward kept for compatibility.
+        """
+        reward_weights = getattr(self.world, '_reward_weights', [1.0, 0.2])
+        reward_scale = getattr(self.world, '_reward_scale', 2000.0)
+        reward_clip_range = getattr(
+            self.world,
+            '_reward_clip_range',
+            [-2.0, 2.0]
+        )
+
+        reward_components = []
+
+        for i, fn_name in enumerate(self.fns_subscribed):
+            result = subscribed_results[i]
+            fn_result = []
+
+            for road_lanes in self.lanes_road_observed:
+                road_result = [
+                    result.get(lane_id, 0.0)
+                    if hasattr(result, 'get')
+                    else result[lane_id]
+                    for lane_id in road_lanes
+                ]
+
+                fn_result.extend(road_result)
+
+            raw_value = np.sum(fn_result)
+            reward_components.append(-raw_value)
+
+        weighted_reward = sum(
+            w * r for w, r in zip(reward_weights, reward_components)
+        )
+
+        normalized_reward = weighted_reward / reward_scale
+
+        if reward_clip_range:
+            clipped_reward = np.clip(
+                normalized_reward,
+                reward_clip_range[0],
+                reward_clip_range[1]
+            )
+        else:
+            clipped_reward = normalized_reward
+
+        return float(clipped_reward)
+
+    def _compute_default_reward(self, subscribed_results) -> float:
+        """
+        Default reward mode for non-FYP algorithms.
+        """
+        reward_components = []
+
+        for i, fn_name in enumerate(self.fns_subscribed):
+            result = subscribed_results[i]
+            config = self.REWARD_CONFIGS[fn_name]
+
+            if fn_name == 'pressure':
+                raw_value = result[self.ts.id]
+
+            elif fn_name in [
+                'lane_waiting_count',
+                'lane_waiting_time_count',
+                'lane_vehicle_count'
+            ]:
+                fn_result = []
+
+                for road_lanes in self.lanes_road_observed:
+                    road_result = [
+                        result.get(lane_id, 0.0)
+                        if hasattr(result, 'get')
+                        else result[lane_id]
+                        for lane_id in road_lanes
+                    ]
+
+                    fn_result.append(np.sum(road_result))
+
+                raw_value = np.sum(fn_result)
+
+            elif fn_name == 'emergency_vehicle_priority':
+                raw_value = -self._compute_emergency_priority_reward()
+
+            else:
+                raise ValueError(f"Unknown reward type: {fn_name}")
+
+            value = -raw_value if config['negative'] else raw_value
+            value = value / config['scale']
+
+            if config.get('clip_range'):
+                value = np.clip(
+                    value,
+                    config['clip_range'][0],
+                    config['clip_range'][1]
+                )
+
+            reward_components.append(value)
+
+        return float(reward_components[0])
+
+    ###########################################################################
+    # Baseline Project1 reward
+    ###########################################################################
+
+    def _compute_project1_std_reward(self) -> float:
+        """
+        Project1 standard deviation-aware reward.
+
+        reward = 50 - ((reg_mean + K*reg_std) + Z*(emg_mean + K*emg_std))
+        """
+
+        config = self.REWARD_CONFIGS['project1_std_reward']
+
+        K = config['K']
+        Z = config['Z']
+        base_reward = config['base_reward']
+        ambulance_type_ids = config['ambulance_type_ids']
+
+        regular_waiting_times = []
+        emergency_waiting_times = []
+
+        eng = self.world.eng
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+
+                    for veh_id in vehicle_ids:
+                        try:
+                            waiting_time = eng.vehicle.getAccumulatedWaitingTime(
+                                veh_id
+                            )
+
+                            veh_type = eng.vehicle.getTypeID(veh_id)
+
+                            if veh_type in ambulance_type_ids:
+                                emergency_waiting_times.append(waiting_time)
+                            else:
+                                regular_waiting_times.append(waiting_time)
+
+                        except Exception:
+                            continue
+
+                except Exception:
+                    continue
+
+        reg_mean = (
+            float(np.mean(regular_waiting_times))
+            if len(regular_waiting_times) > 0
+            else 0.0
+        )
+
+        reg_std = (
+            float(np.std(regular_waiting_times))
+            if len(regular_waiting_times) > 0
+            else 0.0
+        )
+
+        emg_mean = (
+            float(np.mean(emergency_waiting_times))
+            if len(emergency_waiting_times) > 0
+            else 0.0
+        )
+
+        emg_std = (
+            float(np.std(emergency_waiting_times))
+            if len(emergency_waiting_times) > 0
+            else 0.0
+        )
+
+        reward = base_reward - (
+            (reg_mean + K * reg_std)
+            + Z * (emg_mean + K * emg_std)
+        )
+
+        return float(reward)
+
+    def _compute_project1_std_reward_with_configurable_params_old(
+        self,
+        K=None,
+        Z=None
+    ) -> float:
+        """
+        Old configurable Project1 reward.
+        """
+
+        config = self.REWARD_CONFIGS['project1_std_reward']
+
+        K = K if K is not None else config['K']
+        Z = Z if Z is not None else config['Z']
+
+        base_reward = config['base_reward']
+        ambulance_type_ids = config['ambulance_type_ids']
+
+        regular_waiting_times = []
+        emergency_waiting_times = []
+
+        eng = self.world.eng
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+
+                    for veh_id in vehicle_ids:
+                        try:
+                            waiting_time = eng.vehicle.getAccumulatedWaitingTime(
+                                veh_id
+                            )
+
+                            veh_type = eng.vehicle.getTypeID(veh_id)
+
+                            if veh_type in ambulance_type_ids:
+                                emergency_waiting_times.append(waiting_time)
+                            else:
+                                regular_waiting_times.append(waiting_time)
+
+                        except Exception:
+                            continue
+
+                except Exception:
+                    continue
+
+        reg_mean = (
+            float(np.mean(regular_waiting_times))
+            if len(regular_waiting_times) > 0
+            else 0.0
+        )
+
+        reg_std = (
+            float(np.std(regular_waiting_times))
+            if len(regular_waiting_times) > 0
+            else 0.0
+        )
+
+        emg_mean = (
+            float(np.mean(emergency_waiting_times))
+            if len(emergency_waiting_times) > 0
+            else 0.0
+        )
+
+        emg_std = (
+            float(np.std(emergency_waiting_times))
+            if len(emergency_waiting_times) > 0
+            else 0.0
+        )
+
+        reward = base_reward - (
+            (reg_mean + K * reg_std)
+            + Z * (emg_mean + K * emg_std)
+        )
+
+        return float(reward)
+
+    ###########################################################################
+    # FYP reward: weighted queue with EV lane weight
+    ###########################################################################
+
+    def _compute_project1_std_reward_new(self) -> float:
+        """
+        Final year project reward.
+
+        If EV is detected:
+            EV lane gets larger queue weight.
+
+        reward = -sum(w_i * q_i)
+        """
+
+        config = self.REWARD_CONFIGS['final_year_project_reward']
+
+        Z = config['Z']
+        ambulance_type_ids = config['ambulance_type_ids']
+
+        eng = self.world.eng
+
+        #######################################################################
+        # Step 1: Detect EV
+        #######################################################################
+
+        EV_present = False
+        EV_lane_id = None
+        EV_position = None
+        EV_id = None
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+
+                    for veh_id in vehicle_ids:
+                        try:
+                            if eng.vehicle.getTypeID(veh_id) in ambulance_type_ids:
+                                EV_present = True
+                                EV_lane_id = eng.vehicle.getLaneID(veh_id)
+                                EV_position = eng.vehicle.getLanePosition(veh_id)
+                                EV_id = veh_id
+                                break
+
+                        except Exception:
+                            continue
+
+                    if EV_present:
+                        break
+
+                except Exception:
+                    continue
+
+            if EV_present:
+                break
+
+        #######################################################################
+        # Step 2: Compute lane queues and lane weights
+        #######################################################################
+
+        lane_queues = []
+        lane_weights = []
+
+        eps = 1e-4
+        max_weight = 75.0
+        max_tta = 60.0
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    q_i = eng.lane.getLastStepHaltingNumber(lane_id)
+
+                    w_i = 1.0
+
+                    if EV_present and lane_id == EV_lane_id:
+                        lane_length = eng.lane.getLength(lane_id)
+                        dist_to_stop = lane_length - EV_position
+
+                        EV_speed = eng.vehicle.getSpeed(EV_id)
+                        EV_speed = max(EV_speed, 1e-3)
+
+                        EV_tta = dist_to_stop / EV_speed
+                        EV_tta_norm = min(EV_tta / max_tta, 1.0)
+
+                        w_i = 1 + Z / max(EV_tta_norm, eps)
+                        w_i = min(w_i, max_weight)
+
+                    lane_queues.append(q_i)
+                    lane_weights.append(w_i)
+
+                except Exception:
+                    continue
+
+        #######################################################################
+        # Step 3: Compute reward
+        #######################################################################
+
+        lane_queues = np.array(lane_queues)
+        lane_weights = np.array(lane_weights)
+
+        total_weighted_queue = np.sum(lane_weights * lane_queues)
+        reward = -total_weighted_queue
+
+        return float(reward)
+
+    def _compute_project1_std_reward_with_configurable_params(self, Z=None) -> float:
+        """
+        FYP reward with configurable Z.
+        """
+
+        config = self.REWARD_CONFIGS['final_year_project_reward']
+
+        Z = Z if Z is not None else config['Z']
+        ambulance_type_ids = config['ambulance_type_ids']
+
+        eng = self.world.eng
+
+        EV_present = False
+        EV_lane_id = None
+        EV_position = None
+        EV_id = None
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+
+                    for veh_id in vehicle_ids:
+                        try:
+                            if eng.vehicle.getTypeID(veh_id) in ambulance_type_ids:
+                                EV_present = True
+                                EV_lane_id = eng.vehicle.getLaneID(veh_id)
+                                EV_position = eng.vehicle.getLanePosition(veh_id)
+                                EV_id = veh_id
+                                break
+
+                        except Exception:
+                            continue
+
+                    if EV_present:
+                        break
+
+                except Exception:
+                    continue
+
+            if EV_present:
+                break
+
+        lane_queues = []
+        lane_weights = []
+
+        eps = 1e-4
+        max_weight = 75.0
+        max_tta = 60.0
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    q_i = eng.lane.getLastStepHaltingNumber(lane_id)
+
+                    w_i = 1.0
+
+                    if EV_present and lane_id == EV_lane_id:
+                        lane_length = eng.lane.getLength(lane_id)
+                        dist_to_stop = lane_length - EV_position
+
+                        EV_speed = eng.vehicle.getSpeed(EV_id)
+                        EV_speed = max(EV_speed, 1e-3)
+
+                        EV_tta = dist_to_stop / EV_speed
+                        EV_tta_norm = min(EV_tta / max_tta, 1.0)
+
+                        w_i = 1 + Z / max(EV_tta_norm, eps)
+                        w_i = min(w_i, max_weight)
+
+                    lane_queues.append(q_i)
+                    lane_weights.append(w_i)
+
+                except Exception:
+                    continue
+
+        lane_queues = np.array(lane_queues)
+        lane_weights = np.array(lane_weights)
+
+        total_weighted_queue = np.sum(lane_weights * lane_queues)
+        reward = -total_weighted_queue
+
+        return float(reward)
+
+    ###########################################################################
+    # Local intersection delay evaluation helpers
+    ###########################################################################
+
+    def _eval_get_sim_time(self):
+        """
+        Get current simulation time.
+        Used to detect episode reset.
+        """
+
+        try:
+            return float(self.world.eng.simulation.getTime())
+        except Exception:
+            pass
+
+        try:
+            return float(self.world.eng.getCurrentTime()) / 1000.0
+        except Exception:
+            pass
+
+        try:
+            return float(self.world.time)
+        except Exception:
+            pass
+
+        try:
+            return float(self.world.now)
+        except Exception:
+            pass
+
+        return 0.0
+
+    def _eval_maybe_reset_local_delay_records(self):
+        """
+        Reset local delay records when a new episode starts.
+
+        If simulation time goes backwards, it means the episode restarted.
+        """
+
+        current_time = self._eval_get_sim_time()
+
+        if self.last_local_delay_sim_time is not None:
+            if current_time < self.last_local_delay_sim_time:
+                self.local_delay_records = {}
+
+        self.last_local_delay_sim_time = current_time
+
+    def _eval_get_lane_edge_id(self, lane_id):
+        """
+        Convert lane ID to edge ID.
+
+        Example:
+            E01_0  -> E01
+            -E15_1 -> -E15
+        """
+
+        try:
+            return self.world.eng.lane.getEdgeID(lane_id)
+        except Exception:
+            try:
+                return lane_id.rsplit('_', 1)[0]
+            except Exception:
+                return lane_id
+
+    def _eval_get_local_incoming_lane_set(self):
+        """
+        Get all lanes observed by this local intersection.
+        """
+
+        incoming_lanes = set()
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                incoming_lanes.add(lane_id)
+
+        return incoming_lanes
+
+    def _eval_get_ev_route_info(self, ev_id, ev_lane_id):
+        """
+        Get EV remaining route information.
+
+        This lets Group 1 include vehicles ahead of EV on the same route,
+        not only vehicles on the exact same lane.
+        """
+
+        eng = self.world.eng
+
+        ev_edge_id = self._eval_get_lane_edge_id(ev_lane_id)
+
+        try:
+            route = list(eng.vehicle.getRoute(ev_id))
+        except Exception:
+            route = [ev_edge_id]
+
+        try:
+            route_index = int(eng.vehicle.getRouteIndex(ev_id))
+        except Exception:
+            if ev_edge_id in route:
+                route_index = route.index(ev_edge_id)
+            else:
+                route_index = 0
+
+        if route_index < 0:
+            route_index = 0
+
+        if len(route) == 0:
+            route = [ev_edge_id]
+
+        if route_index >= len(route):
+            route_index = max(len(route) - 1, 0)
+
+        remaining_edges = route[route_index:]
+
+        if ev_edge_id not in remaining_edges:
+            remaining_edges = [ev_edge_id] + remaining_edges
+
+        edge_to_rank = {}
+
+        for idx, edge_id in enumerate(remaining_edges):
+            if edge_id not in edge_to_rank:
+                edge_to_rank[edge_id] = idx
+
+        return {
+            'route': route,
+            'route_index': route_index,
+            'remaining_edges': remaining_edges,
+            'edge_to_rank': edge_to_rank,
+            'ev_edge_id': ev_edge_id
+        }
+
+    def _eval_is_vehicle_ahead_on_ev_route(
+        self,
+        veh_lane_id,
+        veh_position,
+        ev_position,
+        route_info
+    ):
+        """
+        Group 1 rule for evaluation.
+
+        Group 1 =
+            regular vehicles ahead of EV on the EV remaining route
+            inside this local intersection.
+
+        Group 2 =
+            all other regular vehicles.
+
+        Same edge:
+            vehicle must be physically ahead of EV.
+
+        Downstream route edge:
+            vehicle is counted as Group 1 if the downstream edge is still
+            inside this local intersection's observed incoming lanes.
+        """
+
+        local_incoming_lanes = self._eval_get_local_incoming_lane_set()
+
+        if veh_lane_id not in local_incoming_lanes:
+            return False
+
+        veh_edge_id = self._eval_get_lane_edge_id(veh_lane_id)
+
+        ev_edge_id = route_info['ev_edge_id']
+        edge_to_rank = route_info['edge_to_rank']
+
+        if veh_edge_id not in edge_to_rank:
+            return False
+
+        if veh_edge_id == ev_edge_id:
+            return veh_position > ev_position
+
+        if edge_to_rank[veh_edge_id] > edge_to_rank.get(ev_edge_id, 0):
+            return True
+
+        return False
+
+    def _eval_mark_seen_group(self, record, current_group):
+        """
+        Mark which group the vehicle has belonged to at this intersection.
+        """
+
+        if current_group == 'ev':
+            record['seen_ev'] = True
+
+        elif current_group == 'group1':
+            record['seen_group1'] = True
+
+        elif current_group == 'group2':
+            record['seen_group2'] = True
+
+    def _eval_update_local_delay_record(self, veh_id, current_group):
+        """
+        Accumulate local intersection time loss.
+
+        SUMO getTimeLoss is global since vehicle departure.
+
+        Local delay here is calculated by:
+
+            local_delta =
+                current_global_timeLoss - previous_global_timeLoss
+
+        Then this local_delta is assigned to the vehicle's current group.
+
+        If a vehicle changes from Group 1 to Group 2:
+            previous delay stays in Group 1
+            future delay goes to Group 2
+        """
+
+        eng = self.world.eng
+
+        try:
+            current_global_timeloss = float(eng.vehicle.getTimeLoss(veh_id))
+        except Exception:
+            current_global_timeloss = 0.0
+
+        #######################################################################
+        # First time this vehicle is seen at this intersection
+        #######################################################################
+
+        if veh_id not in self.local_delay_records:
+            self.local_delay_records[veh_id] = {
+                'last_global_timeloss': current_global_timeloss,
+
+                'ev_delay': 0.0,
+                'group1_delay': 0.0,
+                'group2_delay': 0.0,
+                'total_delay': 0.0,
+
+                'seen_ev': False,
+                'seen_group1': False,
+                'seen_group2': False,
+
+                'last_group': current_group,
+                'inside_last_step': True,
+            }
+
+            self._eval_mark_seen_group(
+                self.local_delay_records[veh_id],
+                current_group
+            )
+
+            # First observation only sets baseline.
+            # Do not add global delay from before this intersection.
+            return
+
+        record = self.local_delay_records[veh_id]
+
+        #######################################################################
+        # If vehicle left this intersection and later re-enters,
+        # reset baseline so outside delay is not counted here.
+        #######################################################################
+
+        if not record.get('inside_last_step', False):
+            record['last_global_timeloss'] = current_global_timeloss
+            record['last_group'] = current_group
+            record['inside_last_step'] = True
+
+            self._eval_mark_seen_group(record, current_group)
+
+            return
+
+        #######################################################################
+        # Normal case: vehicle was also seen here last step
+        #######################################################################
+
+        previous_global_timeloss = record.get(
+            'last_global_timeloss',
+            current_global_timeloss
+        )
+
+        local_delta = max(
+            current_global_timeloss - previous_global_timeloss,
+            0.0
+        )
+
+        record['last_global_timeloss'] = current_global_timeloss
+        record['last_group'] = current_group
+        record['inside_last_step'] = True
+
+        self._eval_mark_seen_group(record, current_group)
+
+        if current_group == 'ev':
+            record['ev_delay'] += local_delta
+
+        elif current_group == 'group1':
+            record['group1_delay'] += local_delta
+
+        elif current_group == 'group2':
+            record['group2_delay'] += local_delta
+
+        record['total_delay'] += local_delta
+
+    def _eval_delay_stats(self, values):
+        """
+        Return safe mean/std/max/min delay values.
+
+        Old waiting names are kept so older scripts do not crash.
+        """
+
+        if len(values) == 0:
+            return {
+                'count': 0,
+
+                'mean_delay': 0.0,
+                'std_delay': 0.0,
+                'max_delay': 0.0,
+                'min_delay': 0.0,
+
+                'mean_waiting': 0.0,
+                'std_waiting': 0.0,
+                'max_waiting': 0.0,
+                'min_waiting': 0.0,
+            }
+
+        mean_delay = float(np.mean(values))
+        std_delay = float(np.std(values))
+        max_delay = float(np.max(values))
+        min_delay = float(np.min(values))
+
+        return {
+            'count': len(values),
+
+            'mean_delay': mean_delay,
+            'std_delay': std_delay,
+            'max_delay': max_delay,
+            'min_delay': min_delay,
+
+            # Compatibility names
+            'mean_waiting': mean_delay,
+            'std_waiting': std_delay,
+            'max_waiting': max_delay,
+            'min_waiting': min_delay,
+        }
+
+    ###########################################################################
+    # Evaluation statistics using LOCAL intersection time loss
+    ###########################################################################
+
+    def get_reward_statistics(self) -> dict:
+        """
+        Evaluation statistics.
+
+        Important:
+            This uses LOCAL intersection delay.
+
+        It does NOT directly use global getTimeLoss as the final result.
+
+        Instead:
+
+            local_delta =
+                current_global_timeLoss - previous_global_timeLoss
+
+        Group switching:
+            If the vehicle is Group 1 now, local_delta goes to Group 1.
+            If it later becomes Group 2, future local_delta goes to Group 2.
+
+        Therefore:
+            Group 1 delay = accumulated local delay while vehicle was Group 1
+            Group 2 delay = accumulated local delay while vehicle was Group 2
+            EV delay      = accumulated local delay while vehicle was EV
+        """
+
+        self._eval_maybe_reset_local_delay_records()
+
+        config = self.REWARD_CONFIGS.get('final_year_project_reward', {})
+        Z = config.get('Z', 1.0)
+
+        ambulance_type_ids = config.get(
+            'ambulance_type_ids',
+            ['ambulance_type', 'emergency']
+        )
+
+        eng = self.world.eng
+
+        #######################################################################
+        # Step 1: Detect EV at this local intersection
+        #######################################################################
+
+        EV_present = False
+        EV_lane_id = None
+        EV_position = None
+        EV_id = None
+        EV_route_info = None
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+
+                    for veh_id in vehicle_ids:
+                        try:
+                            veh_type = eng.vehicle.getTypeID(veh_id)
+
+                            if veh_type in ambulance_type_ids:
+                                EV_present = True
+                                EV_lane_id = eng.vehicle.getLaneID(veh_id)
+                                EV_position = eng.vehicle.getLanePosition(veh_id)
+                                EV_id = veh_id
+                                break
+
+                        except Exception:
+                            continue
+
+                    if EV_present:
+                        break
+
+                except Exception:
+                    continue
+
+            if EV_present:
+                break
+
+        if EV_present:
+            EV_route_info = self._eval_get_ev_route_info(
+                ev_id=EV_id,
+                ev_lane_id=EV_lane_id
+            )
+
+        #######################################################################
+        # Step 2: Update local delay records for vehicles currently inside
+        # this intersection
+        #######################################################################
+
+        lane_queues = []
+        lane_weights = []
+
+        div_error_avoider = 1e-4
+        max_weight = 75.0
+        max_tta = 60.0
+
+        currently_observed_vehicle_ids = set()
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+                except Exception:
+                    vehicle_ids = []
+
+                try:
+                    q_i = eng.lane.getLastStepHaltingNumber(lane_id)
+                except Exception:
+                    q_i = 0.0
+
+                w_i = 1.0
+
+                ###################################################################
+                # Keep old FYP lane-weight calculation for reward component logging
+                ###################################################################
+
+                if EV_present and lane_id == EV_lane_id:
+                    try:
+                        lane_length = eng.lane.getLength(lane_id)
+                        dist_to_stop = lane_length - EV_position
+
+                        EV_speed = eng.vehicle.getSpeed(EV_id)
+                        EV_speed = max(EV_speed, 1e-3)
+
+                        EV_tta = dist_to_stop / EV_speed
+                        EV_tta_norm = min(EV_tta / max_tta, 1.0)
+
+                        w_i = 1 + Z / max(EV_tta_norm, div_error_avoider)
+                        w_i = min(w_i, max_weight)
+
+                    except Exception:
+                        w_i = 1.0
+
+                lane_queues.append(q_i)
+                lane_weights.append(w_i)
+
+                ###################################################################
+                # Local delay update
+                ###################################################################
+
+                for veh_id in vehicle_ids:
+                    try:
+                        currently_observed_vehicle_ids.add(veh_id)
+
+                        veh_type = eng.vehicle.getTypeID(veh_id)
+
+                        if veh_type in ambulance_type_ids:
+                            current_group = 'ev'
+
+                        else:
+                            current_group = 'group2'
+
+                            if EV_present and EV_route_info is not None:
+                                veh_lane_id = eng.vehicle.getLaneID(veh_id)
+                                veh_position = eng.vehicle.getLanePosition(veh_id)
+
+                                is_group1 = (
+                                    self._eval_is_vehicle_ahead_on_ev_route(
+                                        veh_lane_id=veh_lane_id,
+                                        veh_position=veh_position,
+                                        ev_position=EV_position,
+                                        route_info=EV_route_info
+                                    )
+                                )
+
+                                if is_group1:
+                                    current_group = 'group1'
+                                else:
+                                    current_group = 'group2'
+
+                        self._eval_update_local_delay_record(
+                            veh_id=veh_id,
+                            current_group=current_group
+                        )
+
+                    except Exception:
+                        continue
+
+        #######################################################################
+        # Step 3: Mark vehicles not currently inside this intersection
+        #######################################################################
+
+        for veh_id, record in self.local_delay_records.items():
+            if veh_id not in currently_observed_vehicle_ids:
+                record['inside_last_step'] = False
+
+        #######################################################################
+        # Step 4: Build delay lists from accumulated local records
+        #######################################################################
+
+        regular_group1_delays = []
+        regular_group2_delays = []
+        emergency_delays = []
+        all_regular_delays = []
+
+        for veh_id, record in self.local_delay_records.items():
+
+            if record.get('seen_ev', False):
+                emergency_delays.append(record.get('ev_delay', 0.0))
+
+            if record.get('seen_group1', False):
+                regular_group1_delays.append(record.get('group1_delay', 0.0))
+
+            if record.get('seen_group2', False):
+                regular_group2_delays.append(record.get('group2_delay', 0.0))
+
+            if (
+                record.get('seen_group1', False)
+                or record.get('seen_group2', False)
+            ):
+                all_regular_delay = (
+                    record.get('group1_delay', 0.0)
+                    + record.get('group2_delay', 0.0)
+                )
+
+                all_regular_delays.append(all_regular_delay)
+
+        #######################################################################
+        # Step 5: Reward component logging
+        #######################################################################
+
+        lane_queues = np.array(lane_queues)
+        lane_weights = np.array(lane_weights)
+
+        total_weighted_queue = np.sum(lane_weights * lane_queues)
+        reward = -total_weighted_queue
+
+        #######################################################################
+        # Step 6: Return statistics
+        #######################################################################
+
+        stats = {
+            'regular_group1_vehicles': self._eval_delay_stats(
+                regular_group1_delays
+            ),
+
+            'regular_group2_vehicles': self._eval_delay_stats(
+                regular_group2_delays
+            ),
+
+            'emergency_vehicles': self._eval_delay_stats(
+                emergency_delays
+            ),
+
+            'regular_vehicles': self._eval_delay_stats(
+                all_regular_delays
+            ),
+
+            'reward_components': {
+                'lane_queues': lane_queues,
+                'lane_weights': lane_weights,
+                'total_weighted_queue': float(total_weighted_queue),
+                'total_reward': float(reward),
+                'Z': Z,
+
+                'EV_present': EV_present,
+                'EV_id': EV_id,
+                'EV_lane_id': EV_lane_id,
+                'EV_position': EV_position,
+
+                'EV_route_info': EV_route_info,
+
+                'local_delay_records': self.local_delay_records,
+                'num_local_delay_records': len(self.local_delay_records),
+                'currently_observed_vehicle_ids': list(
+                    currently_observed_vehicle_ids
+                ),
+            }
+        }
+
+        return stats
+
+    ###########################################################################
+    # Old evaluation statistics kept for compatibility
+    ###########################################################################
+
+    def get_reward_statistics_old(self) -> dict:
+        """
+        Old waiting-time-based evaluation statistics.
+
+        This is kept only for compatibility.
+        Main evaluation should use get_reward_statistics().
+        """
+
+        config = self.REWARD_CONFIGS.get('project1_std_reward', {})
+
+        K = config.get('K', 0.5)
+        Z = config.get('Z', 1.0)
+        base_reward = config.get('base_reward', 50.0)
+
+        ambulance_type_ids = config.get(
+            'ambulance_type_ids',
+            ['ambulance_type', 'emergency']
+        )
+
+        regular_waiting_times = []
+        emergency_waiting_times = []
+
+        eng = self.world.eng
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+
+                    for veh_id in vehicle_ids:
+                        try:
+                            waiting_time = eng.vehicle.getAccumulatedWaitingTime(
+                                veh_id
+                            )
+
+                            veh_type = eng.vehicle.getTypeID(veh_id)
+
+                            if veh_type in ambulance_type_ids:
+                                emergency_waiting_times.append(waiting_time)
+                            else:
+                                regular_waiting_times.append(waiting_time)
+
+                        except Exception:
+                            continue
+
+                except Exception:
+                    continue
+
+        stats = {
+            'regular_vehicles': {
+                'count': len(regular_waiting_times),
+                'mean_waiting': (
+                    float(np.mean(regular_waiting_times))
+                    if len(regular_waiting_times) > 0
+                    else 0.0
+                ),
+                'std_waiting': (
+                    float(np.std(regular_waiting_times))
+                    if len(regular_waiting_times) > 0
+                    else 0.0
+                ),
+                'max_waiting': (
+                    float(np.max(regular_waiting_times))
+                    if len(regular_waiting_times) > 0
+                    else 0.0
+                ),
+                'min_waiting': (
+                    float(np.min(regular_waiting_times))
+                    if len(regular_waiting_times) > 0
+                    else 0.0
+                ),
+            },
+
+            'emergency_vehicles': {
+                'count': len(emergency_waiting_times),
+                'mean_waiting': (
+                    float(np.mean(emergency_waiting_times))
+                    if len(emergency_waiting_times) > 0
+                    else 0.0
+                ),
+                'std_waiting': (
+                    float(np.std(emergency_waiting_times))
+                    if len(emergency_waiting_times) > 0
+                    else 0.0
+                ),
+                'max_waiting': (
+                    float(np.max(emergency_waiting_times))
+                    if len(emergency_waiting_times) > 0
+                    else 0.0
+                ),
+                'min_waiting': (
+                    float(np.min(emergency_waiting_times))
+                    if len(emergency_waiting_times) > 0
+                    else 0.0
+                ),
+            }
+        }
+
+        reg_mean = stats['regular_vehicles']['mean_waiting']
+        reg_std = stats['regular_vehicles']['std_waiting']
+
+        emg_mean = stats['emergency_vehicles']['mean_waiting']
+        emg_std = stats['emergency_vehicles']['std_waiting']
+
+        regular_penalty = reg_mean + K * reg_std
+        emergency_penalty = Z * (emg_mean + K * emg_std)
+        total_reward = base_reward - regular_penalty - emergency_penalty
+
+        stats['reward_components'] = {
+            'base': base_reward,
+            'regular_penalty': regular_penalty,
+            'emergency_penalty': emergency_penalty,
+            'total_reward': total_reward,
+            'K': K,
+            'Z': Z
+        }
+
+        return stats
