@@ -561,7 +561,7 @@ class parse_sumo_config(): # Does static information extraction affect parallel 
             # Number of lanes is determined by the network, not hardcoded
             num_phases   = len(self.green_phases[tl_id])
             num_in_lanes = sum(len(lanes) for lanes in tl_info['lanes_road_observed_in_only'])
-            ob_length    = num_phases + num_in_lanes * 5 # TODO: will need to adjust to match observation space length
+            ob_length    = num_phases + num_in_lanes * 7 # TODO: will need to adjust to match observation space length
 
             return gym.spaces.Box(
                 low=np.zeros(ob_length, dtype=np.float32),
@@ -952,6 +952,18 @@ class World(parse_sumo_config, gym.Env):
         self.vehicles_entering_time = dict()
         self.vehicles_trip_time = dict() # vehicle_id: time_in_simulation
         self.ev_lane_entry_time = {}  # {veh_id: (lane_id, entry_time)} - NEW FROM FYP
+        self.vehicle_last_timeloss = {}   # {veh_id: last known getTimeLoss() reading} - NEW: delay metric
+        self.vehicle_timeloss_delta = {}  # {veh_id: timeLoss accrued THIS step} - NEW: delay metric
+        
+        self.vehicle_group_delay_totals = {}   # regular vehicles: {veh_id: {'group1': float, 'group2': float}}
+        self.vehicle_ever_group1 = set()       # veh_ids ever classified group1 at any point in their trip
+        self.vehicle_ev_delay_totals = {}      # emergency vehicles: {veh_id: float}  (no group split needed)
+        
+        self.finished_reg_group1_delays = []   # one number per vehicle: its total group1-attributed delay
+        self.finished_reg_group2_delays = []   # one number per vehicle: its total group2-attributed delay
+        self.finished_reg_all_delays = []      # one number per vehicle: total delay (group1+group2)
+        self.finished_ev_delays = []           # one number per EV: total delay over its whole trip
+        
         # # test generate observation information
         self.vehicle_trajectory = {}
         self.vehicle_maxspeed = {}
@@ -1289,6 +1301,7 @@ class World(parse_sumo_config, gym.Env):
             count += 1
         avg_delay = avg_delay / count
         return avg_delay
+    
     def get_outgoing_lane_vehicles(self):
         """
         Get vehicle information on outgoing lanes (used for Project 1 attention mechanism)
@@ -1408,17 +1421,57 @@ class World(parse_sumo_config, gym.Env):
             intsec.collect_objective_traffic_state(self.max_distance) # repeated call compare to reset
             # ✅ 累积每一步的奖励
             intsec.accumulate_reward()
+            
         # register vehicles here
         entering_v = self.eng.simulation.getDepartedIDList()
         exiting_v = self.eng.simulation.getArrivedIDList()
         for v in entering_v:
             self.vehicles_entering_time.update({v: self.get_current_time()})
+                
         for v in exiting_v:
             if v in self.vehicles_entering_time:
                 self.vehicles_trip_time.update({v: self.get_current_time() - self.vehicles_entering_time[v]})
-            # else:
-            #     print(f"Warning: No entry time recorded for vehicle {v}")
-            # self.vehicles_trip_time.update({v: self.get_current_time() - self.vehicles_entering_time[v]})
+
+            # NEW: finalize this vehicle's accumulated group delay into the finished lists
+            if v in self.vehicle_group_delay_totals:
+                totals = self.vehicle_group_delay_totals.pop(v)
+                if totals['group1'] > 0:
+                    self.finished_reg_group1_delays.append(totals['group1'])
+                if totals['group2'] > 0:
+                    self.finished_reg_group2_delays.append(totals['group2'])
+                self.finished_reg_all_delays.append(totals['group1'] + totals['group2'])
+                self.vehicle_ever_group1.discard(v)
+            if v in self.vehicle_ev_delay_totals:
+                self.finished_ev_delays.append(self.vehicle_ev_delay_totals.pop(v))
+
+        # NEW: per-step timeLoss delta, computed ONCE here for every vehicle.
+        # getTimeLoss() is cumulative since departure, not a per-step rate, so we
+        # track each vehicle's last-seen reading and take the difference. This is
+        # centralized in World (rather than inside Rewards.get_reward_statistics)
+        # so that multiple intersections reading the same vehicle in the same step
+        # don't each try to "consume" the delta and double-count / zero it out.
+        for veh_id in self.eng.vehicle.getIDList():
+            try:
+                current_timeloss = self.eng.vehicle.getTimeLoss(veh_id)
+                if veh_id in self.vehicle_last_timeloss:
+                    delta = current_timeloss - self.vehicle_last_timeloss[veh_id]
+                else:
+                    delta = 0.0
+                delta = max(delta, 0.0)
+                # ACCUMULATE across sub-steps within a decision interval — do NOT overwrite.
+                # Reset happens once per decision, in step_sim_until_time_to_act(), not here.
+                self.vehicle_timeloss_delta[veh_id] = self.vehicle_timeloss_delta.get(veh_id, 0.0) + delta
+                self.vehicle_last_timeloss[veh_id] = current_timeloss
+            except Exception:
+                continue
+
+        # clean up last-seen baseline for vehicles that just left
+        for veh_id in exiting_v:
+            self.vehicle_last_timeloss.pop(veh_id, None)
+            # NOTE: do NOT pop from vehicle_timeloss_delta here — a vehicle that
+            # arrives mid-decision-window should still have its accrued delay
+            # counted when get_reward_statistics() reads it. It clears naturally
+            # at the next reset in step_sim_until_time_to_act().  
         
         # NEW FOR FYP
         # Track EV lane entry times for delay ratio computation
@@ -1454,12 +1507,16 @@ class World(parse_sumo_config, gym.Env):
         #print("DEBUG: step_sim_until_time_to_act v2")  # ← add this
 
         time_to_act = False
-        
+
+        # Reset the per-decision timeLoss accumulator ONCE per decision window
+        # (not per raw sim-second) so it captures the FULL decision_interval's
+        # worth of accrued delay by the time it's read via get_reward_statistics().
+        self.vehicle_timeloss_delta = {}
+
         while not time_to_act:
             if self.step_counter >= self.sim_max_steps:
-                #print(f"DEBUG: Reached sim_max_steps={self.sim_max_steps}, force exiting loop")
                 break
-            self.eng.simulationStep()            
+            self.eng.simulationStep()
             self.step_counter += 1
             self.step_sim_and_statistics()
     
@@ -1500,6 +1557,16 @@ class World(parse_sumo_config, gym.Env):
         self.vehicles_trip_time = dict()
         self.ev_lane_entry_time = {} # {veh_id: (lane_id, entry_time)} - NEW FOR FYP
         self.vehicles_entering_time = dict()
+        self.vehicle_last_timeloss = {}   # NEW: reset each episode
+        self.vehicle_timeloss_delta = {}  # NEW: reset each episode
+        # NEW: clear per-vehicle delay tracking each episode
+        self.vehicle_group_delay_totals = {}
+        self.vehicle_ever_group1 = set()
+        self.vehicle_ev_delay_totals = {}
+        self.finished_reg_group1_delays = []
+        self.finished_reg_group2_delays = []
+        self.finished_reg_all_delays = []
+        self.finished_ev_delays = []
         # old todo was here - check when to close traci
         if self.interface_flag:
             libsumo.start(self.sumo_cmd)
@@ -1924,11 +1991,27 @@ class World(parse_sumo_config, gym.Env):
                     rerouted_count += 1
                 except Exception as e:
                     failed_count += 1
-            print(f"✓ Successfully rerouted {rerouted_count} affected vehicles")
+            print("✓ Successfully rerouted {rerouted_count} affected vehicles")
             if failed_count > 0:
                 print(f"⚠ {failed_count} vehicles encountered issues during rerouting (will continue using original route)")
         else:
-            print(f"✓ No vehicles currently affected")
+            print("✓ No vehicles currently affected")
+            
+    def finalize_stranded_vehicles(self):
+        """Flush vehicles still in the sim at episode end into the finished lists,
+        using their partial accumulated totals (trip didn't complete before cutoff)."""
+        for v, totals in list(self.vehicle_group_delay_totals.items()):
+            if totals['group1'] > 0:
+                self.finished_reg_group1_delays.append(totals['group1'])
+            if totals['group2'] > 0:
+                self.finished_reg_group2_delays.append(totals['group2'])
+            self.finished_reg_all_delays.append(totals['group1'] + totals['group2'])
+        self.vehicle_group_delay_totals = {}
+        self.vehicle_ever_group1 = set()
+    
+        for v, total in list(self.vehicle_ev_delay_totals.items()):
+            self.finished_ev_delays.append(total)
+        self.vehicle_ev_delay_totals = {}
 
 class Intersection():
     '''

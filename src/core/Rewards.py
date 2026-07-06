@@ -886,29 +886,39 @@ class GetRewards(ObservationFunction):
                     
                     lane_queues.append(q_i)
                     lane_weights.append(w_i)
-                        
+                    
                     for veh_id in vehicle_ids:
                         try:
-                            waiting_time = eng.vehicle.getAccumulatedWaitingTime(veh_id)
+                            waiting_time = self.world.vehicle_timeloss_delta.get(veh_id, 0.0)
                             veh_type = eng.vehicle.getTypeID(veh_id)
-                            
+
                             if veh_type in ambulance_type_ids:
                                 emergency_waiting_times.append(waiting_time)
-                                
+                                # NEW: running per-EV total over its whole trip
+                                self.world.vehicle_ev_delay_totals[veh_id] = (
+                                    self.world.vehicle_ev_delay_totals.get(veh_id, 0.0) + waiting_time
+                                )
                             else:
+                                # NEW: running per-vehicle group totals, split by whichever
+                                # group it's classified as THIS step - naturally handles a
+                                # vehicle flipping group1 -> group2 -> group1 over its trip.
+                                totals = self.world.vehicle_group_delay_totals.setdefault(
+                                    veh_id, {'group1': 0.0, 'group2': 0.0}
+                                )
                                 if EV_present == True and lane_id == EV_lane_id:
-                                    veh_position = eng.vehicle.getLanePosition(veh_id) 
+                                    veh_position = eng.vehicle.getLanePosition(veh_id)
                                     if veh_position > EV_position:
-                                        regular_group1_waiting_times.append(waiting_time) # Group 1 - EV blocking
-                                    
+                                        regular_group1_waiting_times.append(waiting_time)
+                                        totals['group1'] += waiting_time
+                                        self.world.vehicle_ever_group1.add(veh_id)
                                     else:
                                         regular_group2_waiting_times.append(waiting_time)
-                                
+                                        totals['group2'] += waiting_time
                                 else:
                                     regular_group2_waiting_times.append(waiting_time)
-                                
-                                
-                        except:
+                                    totals['group2'] += waiting_time
+
+                        except Exception as e:
                             continue
                 except:
                     continue

@@ -283,14 +283,14 @@ class Observation(ObservationFunction):
                       for lane_id in road_lanes]
     
         # Toggle which lane-fullness metric feeds Feature 1.
-        FEATURE1_MODE = 'fixed_17_baseline'  # options: 'fixed_17_baseline', 'lane_capacity_occupancy' # TODO
+        FEATURE1_MODE = 'lane_capacity_occupancy'  # options: 'fixed_17_baseline', 'lane_capacity_occupancy' # TODO
     
         # Toggle which EV congestion metric feeds the observation.
-        EV_DELAY_METRIC_MODE = 'waiting_time'  # options: 'delay_ratio', 'waiting_time' # TODO
+        EV_DELAY_METRIC_MODE = 'delay_ratio'  # options: 'delay_ratio', 'waiting_time' # TODO
     
         # Toggle which EV urgency representation feeds the observation.
         # Obs dims per lane vary by mode: tta(1), speed(1), distance(1), speed_distance(2), none(0)
-        EV_URGENCY_MODE = 'none'  # options: 'tta', 'speed', 'distance', 'speed_distance', 'none' # TODO
+        EV_URGENCY_MODE = 'speed_distance'  # options: 'tta', 'speed', 'distance', 'speed_distance', 'none' # TODO
     
         for lane_idx, lane_id in enumerate(flat_lanes):
             if lane_id == 'dummy':
@@ -480,7 +480,11 @@ class Observation(ObservationFunction):
 
         # Toggle which EV congestion metric feeds the observation.
         # Switch this one line to flip between the two — obs length is unchanged either way.
-        EV_DELAY_METRIC_MODE = 'waiting_time'  # options: 'delay_ratio', 'waiting_time' # TODO: pick if you want EV Delay Ratio or EV Waiting time used
+        EV_DELAY_METRIC_MODE = 'delay_ratio'  # options: 'delay_ratio', 'waiting_time' # TODO: pick if you want EV Delay Ratio or EV Waiting time used
+        
+        # Toggle which lane-fullness metric feeds Feature 1.
+        # Switch this one line to flip between the two — obs length is unchanged either way.
+        FEATURE1_MODE = 'lane_capacity_occupancy'  # options: 'fixed_17_baseline', 'lane_capacity_occupancy' # TODO: pick if you want the fixed /17 count or per-lane capacity ('lane_capacity_occupancy') occupancy used
         
         # Toggle which EV urgency representation feeds the observation.
         # Mutually exclusive by design — TTA is itself derived from speed+distance,
@@ -616,10 +620,6 @@ class Observation(ObservationFunction):
     
             regular_vehicles = [v for v in vehicles_info if not v['is_emergency']]
     
-            # Toggle which lane-fullness metric feeds Feature 1.
-            # Switch this one line to flip between the two — obs length is unchanged either way.
-            FEATURE1_MODE = 'fixed_17_baseline'  # options: 'fixed_17_baseline', 'lane_capacity_occupancy' # TODO: pick if you want the fixed /17 count or per-lane capacity ('lane_capacity_occupancy') occupancy used
-
             if FEATURE1_MODE == 'lane_capacity_occupancy':
                 # Lane Occupancy - how full a lane is from [0, 1] - vehicle count / lane capacity (capacity = lane_length / vehicle_size_min_gap)
                 feature1 = min(len(vehicles_info) / self._lane_capacities[lane_idx], 1.0)
