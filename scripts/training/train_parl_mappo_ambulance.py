@@ -38,6 +38,7 @@ print(f"Working directory set to: {os.getcwd()}")
 from src.agents.MAPPOagent import MAPPOAgent
 from src.core.parlenv import PARLSumoEnv
 from src.core.Rewards import GetRewards
+from src.core.Observations import FYP_OBS_CONFIG, get_fyp_observation_dims, print_fyp_obs_config
 
 
 # ============================================================================
@@ -165,9 +166,9 @@ def create_sumo_config(scenario_dir, config_dir, gui=False): # Set gui=False for
     config = {
         "name": "emergency_mappo_ambulance",
         "dir": scenario_dir,
-        "roadnetFile": "3_intersection_corridor.net.xml", # Change if changing network
-        "flowFile": "vtypes.rou.xml,3_intersection_corridor_1800.rou.xml,ambulance_var1.rou.xml", # TODO: Scenarios: Check right network and demand files are used (also check right scenario folder is used in other places)
-        "combined_file": "3_intersection_corridor.sumocfg", # Change if changing network (may also have to edit this file if switching the demand in use)
+        "roadnetFile": "3_intersection_corridor_250long.net.xml", # Change if changing network
+        "flowFile": "vtypes.rou.xml,3_intersection_corridor_250long_1800.rou.xml,ambulance_var1.rou.xml", # TODO: Scenarios: Check right network and demand files are used (also check right scenario folder is used in other places)
+        "combined_file": "3_intersection_corridor_250long.sumocfg", # Change if changing network (may also have to edit this file if switching the demand in use)
         "gui": gui, # Set "gui" = gui, Warning: Libsumo on Windows does not work with GUI, falling back to plain libsumo.
         "no_warning": True,
         "decision_interval": 5,
@@ -194,7 +195,7 @@ def main():
     parser.add_argument('--config', type=str, default='mappo_ambulance', # TODO: Rewards: Factors (e.g. Z and K) for the reward are taken from this - should align with reward being used - from configs/tsc folder - mappo_ambulance for BASELINE, mappo_fyp_config for FYP
                         help='Config name in configs/tsc/ (baseline is: mappo_ambulance)')
     parser.add_argument('--scenario-dir', type=str,
-                        default='scenarios/3_intersection_corridor', # TODO: change this when switching to a new scenario/network
+                        default='scenarios/3_intersection_corridor_250long', # TODO: change this when switching to a new scenario/network
                         help='SUMO scenario directory')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
 
@@ -298,7 +299,7 @@ def main():
         "obs_to_subscribe":      config['algorithm']['observation']['obs_to_subscribe'],
         "reward_to_subscribe":   config['algorithm']['reward']['reward_to_subscribe'],
         # Activates project1-style observation AND reward routing
-        "algorithm_name":        "final_year_project_lane_mode", # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
+        "algorithm_name":        "final_year_project", # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
         "normalize_observation": config['algorithm']['observation'].get('normalize', False),
         "norm_params":           config['algorithm']['observation'].get('norm_params', {}),
         "reward_weights":        config['algorithm']['reward'].get('reward_weights', [1.0]),
@@ -330,6 +331,7 @@ def main():
         
     elif algorithm_name == "final_year_project":
         print("\nUsing FINAL YEAR PROJECT observation/state space\n")
+        print_fyp_obs_config()
     elif algorithm_name == "final_year_project_lane_mode":
         print("\nUsing FINAL YEAR PROJECT !LANE! VERSION observation/state space\n")
     else:
@@ -469,11 +471,15 @@ def main():
         'config_path':       config_path,
         'exp_dir':           exp_dir,
         'algorithm':         'MAPPO-Ambulance', # I dont think this needs to be renamed? don't think its used for any if statements - only algorithm_name at line ~300 is 100% used and important (normally I jsut leave this as 'MAPPO-Ambulance')
-        'algorithm_name_env': 'final_year_project_lane_mode', # TODO: MAY? affect what Observation state space is being used (not 100% sure) - change this to be fyp or final_year_project for FYP model (or final_year_project_lane_mode for LANE FEATURES version) OR project1_std_dqn for baseline model
+        'algorithm_name_env': 'final_year_project', # TODO: MAY? affect what Observation state space is being used (not 100% sure) - change this to be fyp or final_year_project for FYP model (or final_year_project_lane_mode for LANE FEATURES version) OR project1_std_dqn for baseline model
         'obs_dim':           obs_dim,
         'pretrained_model':  args.load_model if args.load_model else None,
         'start_episode':     start_episode,
         'max_episodes':      max_episodes,
+        # Snapshot of the observation feature toggles used for this run
+        # (only meaningful when algorithm_name == "final_year_project")
+        'fyp_obs_config':    FYP_OBS_CONFIG,
+        'fyp_obs_dims':      dict(zip(('intersection_dim', 'per_lane_dim'), get_fyp_observation_dims())),
     }
     with open(os.path.join(exp_dir, 'exp_config.json'), 'w') as f:
         json.dump(exp_config, f, indent=2)
