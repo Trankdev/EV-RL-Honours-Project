@@ -8,7 +8,7 @@ import sumolib
 import libsumo
 import json
 from .Rewards import GetRewards
-from .Observations import Observation
+from .Observations import Observation, get_fyp_observation_dims
 
 class parse_sumo_config(): # Does static information extraction affect parallel simulation?
     def __init__(self, sumo_config, **kwargs):
@@ -561,7 +561,7 @@ class parse_sumo_config(): # Does static information extraction affect parallel 
             # Number of lanes is determined by the network, not hardcoded
             num_phases   = len(self.green_phases[tl_id])
             num_in_lanes = sum(len(lanes) for lanes in tl_info['lanes_road_observed_in_only'])
-            ob_length    = num_phases + num_in_lanes * 7 # TODO: will need to adjust to match observation space length
+            ob_length    = num_phases + num_in_lanes * 7 # will need to adjust to match observation space length
 
             return gym.spaces.Box(
                 low=np.zeros(ob_length, dtype=np.float32),
@@ -570,11 +570,15 @@ class parse_sumo_config(): # Does static information extraction affect parallel 
             )
         
         if 'final_year_project' in algorithm_name.lower() or 'fyp' in algorithm_name.lower():
-            # Dynamic format: state space changes depending what is used please EDIT ob_length with the TODO:
+            # Dynamic format: intersection-level and per-lane feature counts are
+            # read from FYP_OBS_CONFIG in Observations.py, so toggling features
+            # there automatically resizes this observation space - no manual
+            # editing needed here any more.
             # Number of lanes is determined by the network, not hardcoded
             num_phases   = len(self.green_phases[tl_id])
             num_in_lanes = sum(len(lanes) for lanes in tl_info['lanes_road_observed_in_only'])
-            ob_length    = 3 + num_phases + num_in_lanes * 4 # TODO: will need to adjust to match observation space length
+            inter_dim, lane_dim = get_fyp_observation_dims()
+            ob_length    = inter_dim + num_phases + num_in_lanes * lane_dim # TODO: this should be automatic now - just change Observations.py
         
             return gym.spaces.Box(
                 low=np.zeros(ob_length, dtype=np.float32),
