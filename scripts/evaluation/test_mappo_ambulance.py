@@ -34,6 +34,7 @@ print(f"Working directory set to: {os.getcwd()}")
 from src.agents.MAPPOagent import MAPPOAgent
 from src.core.parlenv import PARLSumoEnv
 from src.core.Rewards import GetRewards
+from src.core.Observations import FYP_OBS_CONFIG, get_fyp_observation_dims, print_fyp_obs_config
 
 
 # ============================================================================
@@ -303,7 +304,7 @@ def test_model(
          else config.get('algorithm', {}).get('ambulance', {}).get('Z', 3.0))
 
     print(f"Using Z={Z}")
-    print(f"Reward formula : -sum(lane_weights * lane_queues) # new reward function, where lane_weights = (1 + Z/EV_norm_tta)\n")
+    print("Reward formula : -sum(lane_weights * lane_queues) # new reward function, where lane_weights = (1 + Z/EV_norm_tta)\n")
 
     # Inject Z so the reward function uses the correct values
     GetRewards.REWARD_CONFIGS['final_year_project_reward']['Z'] = Z 
@@ -347,7 +348,7 @@ def test_model(
         "sync_mode":             True,
         "obs_to_subscribe":      config['algorithm']['observation']['obs_to_subscribe'],
         "reward_to_subscribe":   config['algorithm']['reward']['reward_to_subscribe'],
-        "algorithm_name":        "final_year_project_lane_mode",   # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
+        "algorithm_name":        "final_year_project",   # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
         "normalize_observation": config['algorithm']['observation'].get('normalize', False),
         "norm_params":           config['algorithm']['observation'].get('norm_params', {}),
         "reward_weights":        config['algorithm']['reward'].get('reward_weights', [1.0]),
@@ -409,6 +410,7 @@ def test_model(
         print("\nUsing BASELINE RL (Kodogoda-style) observation/state space\n")
     elif algorithm_name == "final_year_project":
         print("\nUsing FINAL YEAR PROJECT observation/state space\n")
+        print_fyp_obs_config()
     elif algorithm_name == "final_year_project_lane_mode":
          print("\nUsing FINAL YEAR PROJECT !LANE! VERSION observation/state space\n")
     else:
@@ -499,7 +501,7 @@ def test_model(
     summary = {
         'model_path':            model_path,
         'config_path':           config_path,
-        'algorithm_name_env':    'final_year_project_lane_mode', # TODO: MAY? affect what Observation state space is being used (not 100% sure) - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
+        'algorithm_name_env':    'final_year_project', # TODO: MAY? affect what Observation state space is being used (not 100% sure) - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
         'Z':                     Z,
         'num_episodes':          num_episodes,
         'deterministic':         deterministic,
@@ -524,6 +526,10 @@ def test_model(
         'ev_delay_std_mean': evs_m, 'ev_delay_std_std': evs_s,
         # NEW: per-intersection waiting-time metrics, keyed by agent_id
         'per_intersection_summary': per_intersection_summary,
+        # Snapshot of the observation feature toggles used for this test run
+        # (only meaningful when algorithm_name == "final_year_project")
+        'fyp_obs_config':        FYP_OBS_CONFIG,
+        'fyp_obs_dims':          dict(zip(('intersection_dim', 'per_lane_dim'), get_fyp_observation_dims())),
         # per-episode detail
         'all_results':           all_results,
     }
@@ -563,7 +569,7 @@ Examples:
 """)
     
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/8.FYPLane_EVDlyRto_Occupncy_EVSpeed_EVDist_3Inter250_1800_mappo_ambulance_K0.5_Z3.0_seed42_20260704_152142/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
+                        default='experiments/mappo_ambulance_K0.5_Z3.0_seed42_20260707_145938/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
                         help='Path to the .pt model checkpoint')
     
     parser.add_argument('--config', type=str,
