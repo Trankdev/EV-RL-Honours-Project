@@ -72,7 +72,8 @@ def run_episode(env, agent, obs_dim, train=True):
     agent.reset()
     agent_ids = env.get_agent_ids()
     n_agents = len(agent_ids)
-    total_reward = {agent_id: 0 for agent_id in agent_ids}
+    n_objectives = agent.n_objectives  # NEW FOR LEXICOGRAPHIC MORL
+    total_reward = {agent_id: np.zeros(n_objectives) for agent_id in agent_ids}
     steps = 0
 
     # Accumulators for reward-component stats across the episode
@@ -90,11 +91,15 @@ def run_episode(env, agent, obs_dim, train=True):
         action_dict = {agent_id: actions[i] for i, agent_id in enumerate(agent_ids)}
         next_obs, reward_dict, done, info = env.step(action_dict)
 
+        # NEW FOR LEXICOGRAPHIC MORL: reward_dict values are now always
+        # arrays of shape (n_objectives,) (parlenv.py wraps legacy scalar
+        # rewards as shape-(1,) arrays), so the fallback for a missing
+        # agent must match that shape rather than a bare 0.0.
         if agent.args['common_reward']:
             common_reward = sum(reward_dict.values())
             rewards = np.array([common_reward] * n_agents)
         else:
-            rewards = np.array([reward_dict.get(aid, 0.0) for aid in agent_ids])
+            rewards = np.array([reward_dict.get(aid, np.zeros(n_objectives)) for aid in agent_ids])
 
         if train:
             agent.store_transition(obs_list, actions, rewards)
@@ -192,7 +197,9 @@ def main():
         description='Train MAPPO agent with project1-style EMV-aware obs+reward')
 
     # Config / scenario
-    parser.add_argument('--config', type=str, default='mappo_ambulance', # TODO: Rewards: Factors (e.g. Z and K) for the reward are taken from this - should align with reward being used - from configs/tsc folder - mappo_ambulance for BASELINE, mappo_fyp_config for FYP
+    
+    # This one is important for the Reward Function setup (parameters) AND agent model (mappo or lmorl) along with the relevant Hyperparameters - WHICH ARE CONFIGURED WITHIN THE CONFIG .yaml FILE ITSELF!!!
+    parser.add_argument('--config', type=str, default='mappo_ambulance', # TODO: Use mappo_ambulance for BASELINE, mappo_fyp_config for FYP and mappo_fyp_lexicographic_config for lexicographic - from configs/tsc folder
                         help='Config name in configs/tsc/ (baseline is: mappo_ambulance)')
     parser.add_argument('--scenario-dir', type=str,
                         default='scenarios/3_intersection_corridor_250long', # TODO: change this when switching to a new scenario/network
@@ -289,6 +296,23 @@ def main():
     #      _compute_project1_std_observation()  (68-dim)
     #      _compute_project1_std_reward()        (std-aware EMV formula)
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Environment config
+    # Key: algorithm_name = "project1_std_dqn" activates
+    #      _compute_project1_std_observation()  (68-dim)
+    #      _compute_project1_std_reward()        (std-aware EMV formula)
+    #
+    # NEW FOR LEXICOGRAPHIC MORL: set config['algorithm']['lexicographic']
+    # ['enabled'] = true to switch the reward path to
+    # GetRewards._compute_lexicographic_reward_vector() (r1=EV, r2=regular)
+    # and the agent to the Lagrangian LPPO actor loss. Observation space is
+    # untouched either way - only reward/critic/actor change.
+    # ------------------------------------------------------------------
+    lex_cfg = config['algorithm'].get('lexicographic', {})
+    lex_enabled = lex_cfg.get('enabled', False)
+    n_objectives = lex_cfg.get('n_objectives', 2) if lex_enabled else 1
+
+    base_algorithm_name = "final_year_project" # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
     env_config = {
         "sumo_config":           os.path.abspath(sumo_config_path),
         "interface":             config.get('environment', {}).get('interface', 'libsumo'),
@@ -298,8 +322,13 @@ def main():
         # ignores them and queries SUMO directly for per-vehicle waiting times.
         "obs_to_subscribe":      config['algorithm']['observation']['obs_to_subscribe'],
         "reward_to_subscribe":   config['algorithm']['reward']['reward_to_subscribe'],
-        # Activates project1-style observation AND reward routing
-        "algorithm_name":        "final_year_project", # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
+        # Activates project1-style observation AND reward routing.
+        # Appending "_lexicographic" (rather than swapping the name outright)
+        # keeps the FYP observation-space dispatch in Observations.py intact
+        # (it string-matches 'final_year_project'/'fyp') while separately
+        # triggering the new reward path in Rewards.py (it string-matches
+        # 'lexicographic'/'lmorl' FIRST, checked ahead of the fyp branch).
+        "algorithm_name":        base_algorithm_name + ("_lexicographic" if lex_enabled else ""),
         "normalize_observation": config['algorithm']['observation'].get('normalize', False),
         "norm_params":           config['algorithm']['observation'].get('norm_params', {}),
         "reward_weights":        config['algorithm']['reward'].get('reward_weights', [1.0]),
@@ -326,16 +355,42 @@ def main():
     
     algorithm_name = env_config["algorithm_name"]
     print("=" * 70)
-    if algorithm_name == "project1_std_dqn":
+
+    # NEW: fail loudly here instead of silently falling through to the
+    # wrong observation branch deep in Observations.py. base_algorithm_name
+    # is the OBSERVATION-SPACE selector only - it must be exactly one of
+    # these three. lexicographic.enabled appends "_lexicographic" onto
+    # whichever of these you pick, automatically - do not put
+    # "lexicographic" in base_algorithm_name itself.
+    _valid_base_names = ("project1_std_dqn", "final_year_project", "final_year_project_lane_mode")
+    if base_algorithm_name not in _valid_base_names:
+        raise ValueError(
+            f"base_algorithm_name = {base_algorithm_name!r} is not a recognised observation-space "
+            f"selector - it must be exactly one of {_valid_base_names}. "
+            f"lexicographic.enabled in the YAML appends '_lexicographic' onto this automatically; "
+            f"you should not put 'lexicographic' here yourself. "
+            f"(Full algorithm_name that would have been sent to the environment: {algorithm_name!r})"
+        )
+
+    # NOTE: these checks are against base_algorithm_name (pre-suffix), not
+    # algorithm_name (post-suffix) - when lexicographic mode is on,
+    # algorithm_name is e.g. "final_year_project_lexicographic", which will
+    # never == "final_year_project" exactly.
+    if base_algorithm_name == "project1_std_dqn":
         print("\nUsing BASELINE RL (Kodogoda-style) observation/state space\n")
         
-    elif algorithm_name == "final_year_project":
+    elif base_algorithm_name == "final_year_project":
         print("\nUsing FINAL YEAR PROJECT observation/state space\n")
         print_fyp_obs_config()
-    elif algorithm_name == "final_year_project_lane_mode":
+    elif base_algorithm_name == "final_year_project_lane_mode":
         print("\nUsing FINAL YEAR PROJECT !LANE! VERSION observation/state space\n")
-    else:
-        print(f"\nPotential algorithm name mismatch: {algorithm_name}\n")
+    if lex_enabled:
+        print(f"\nLEXICOGRAPHIC MORL ENABLED: n_objectives={n_objectives} "
+              f"(r1=EV priority [system-wide], r2=regular vehicles [local])")
+        print(f"   tolerance={lex_cfg.get('tolerance', 0.0)}  "
+              f"dual_lr={lex_cfg.get('dual_lr', 0.05)}  "
+              f"ema_rho={lex_cfg.get('ema_rho', 0.05)}  "
+              f"base_weight_decay={lex_cfg.get('base_weight_decay', 0.1)}\n")
     print("=" * 70)
 
     # ------------------------------------------------------------------
@@ -364,6 +419,13 @@ def main():
         obs_last_action=False,
         target_update_interval_or_tau=0.01,
         common_reward=config['algorithm'].get('common_reward', False),
+        # NEW FOR LEXICOGRAPHIC MORL
+        n_objectives=n_objectives,
+        lexicographic=lex_enabled,
+        lex_tolerance=lex_cfg.get('tolerance', 0.0),
+        lex_dual_lr=lex_cfg.get('dual_lr', 0.05),
+        lex_ema_rho=lex_cfg.get('ema_rho', 0.05),
+        lex_base_weight_decay=lex_cfg.get('base_weight_decay', 0.1),
     )
 
     if args.load_model:
@@ -397,17 +459,23 @@ def main():
          ambulance_duration, civilian_avg_trip_time,
          reward_stats) = run_episode(env, agent, obs_dim, train=True)
 
-        avg_reward = np.mean([total_reward[aid] for aid in agent_ids])
+        # NEW FOR LEXICOGRAPHIC MORL: total_reward[aid] is now always an
+        # array of shape (n_objectives,). avg_reward_per_objective[i] is
+        # this episode's mean (across agents) return for objective i;
+        # avg_reward keeps its old meaning (objective 0) for anything that
+        # only expects a single number.
+        avg_reward_per_objective = np.mean([total_reward[aid] for aid in agent_ids], axis=0)
+        avg_reward = float(avg_reward_per_objective[0])
 
         log_entry = {
             'episode':              episode,
             'steps':                steps,
-            'avg_reward':           float(avg_reward),
+            'avg_reward':           avg_reward,
+            'avg_reward_per_objective': [float(x) for x in avg_reward_per_objective],
             'actor_loss':           float(train_stats.get('actor_loss',
                                           train_stats.get('pg_loss', 0))),
             'critic_loss':          float(train_stats.get('critic_loss', 0)),
             'entropy':              float(train_stats.get('entropy', 0)),
-            'advantage_mean':       float(train_stats.get('advantage_mean', 0)),
             'td_error_abs':         float(train_stats.get('td_error_abs', 0)),
             'ambulance_duration':   float(ambulance_duration),
             'civilian_avg_trip_time': float(civilian_avg_trip_time),
@@ -417,17 +485,39 @@ def main():
             'emg_waiting_mean':     float(reward_stats['emg_waiting_mean']),
             'emg_waiting_std':      float(reward_stats['emg_waiting_std']),
         }
+        # per-objective advantage means, and (if lexicographic) the dual
+        # variables - whatever MAPPOLearner.train() actually logged.
+        for key, val in train_stats.items():
+            if key.startswith('advantage_mean_r') or key.startswith('lex_'):
+                log_entry[key] = float(val)
         training_log.append(log_entry)
 
+        # NEW FOR LEXICOGRAPHIC MORL: show each objective's own average
+        # reward separately (r1=EV, r2=regular, ...) instead of one number,
+        # so you can see "this run got X reward for EVs, Y for regular
+        # vehicles" directly in the console / training.json.
+        if agent.args.get('lexicographic', False):
+            reward_display = " | ".join(
+                f"r{i+1}={avg_reward_per_objective[i]:7.2f}" for i in range(agent.n_objectives)
+            )
+        else:
+            reward_display = f"AvgReward={avg_reward:7.2f}"
+
+        lex_suffix = ""
+        if agent.args.get('lexicographic', False):
+            lam_str = ", ".join(f"lam_r{i+1}={train_stats.get(f'lex_lambda_r{i+1}', 0):.3f}"
+                                 for i in range(agent.n_objectives - 1))
+            lex_suffix = f" | {lam_str}"
+
         print(f"Episode {episode:4d}/{max_episodes} | "
-              f"Steps={steps:4d} | AvgReward={avg_reward:7.2f} | "
+              f"Steps={steps:4d} | {reward_display} | "
               f"EMV={ambulance_duration:.1f}s | Civilian={civilian_avg_trip_time:.1f}s | "
               f"RegWait={reward_stats['reg_waiting_mean']:.2f}s "
               f"(std={reward_stats['reg_waiting_std']:.2f}) | "
               f"EmgWait={reward_stats['emg_waiting_mean']:.2f}s | "
               f"ActorL={log_entry['actor_loss']:.4f} | "
               f"CriticL={log_entry['critic_loss']:.4f} | "
-              f"Entropy={log_entry['entropy']:.4f}")
+              f"Entropy={log_entry['entropy']:.4f}{lex_suffix}")
 
         if episode % save_interval == 0:
             save_path = os.path.join(model_save_dir, f"agent_episode_{episode}.pt")
@@ -454,6 +544,7 @@ def main():
         "episodes_trained":  max_episodes - start_episode + 1,
         "total_time":        time.time() - training_start_time,
         "final_avg_reward":  float(avg_reward),
+        "final_avg_reward_per_objective": [float(x) for x in avg_reward_per_objective],  # NEW FOR LEXICOGRAPHIC MORL
         "loaded_from":       args.load_model if args.load_model else None,
         "training_log":      training_log,
     }
@@ -480,6 +571,13 @@ def main():
         # (only meaningful when algorithm_name == "final_year_project")
         'fyp_obs_config':    FYP_OBS_CONFIG,
         'fyp_obs_dims':      dict(zip(('intersection_dim', 'per_lane_dim'), get_fyp_observation_dims())),
+        # NEW FOR LEXICOGRAPHIC MORL: snapshot of the lexicographic config
+        # used for this run, plus the final Lagrangian dual state, so a run
+        # can be inspected/resumed with full knowledge of what it was doing.
+        'lexicographic_enabled': lex_enabled,
+        'lexicographic_config':  lex_cfg,
+        'lexicographic_final_lambda': getattr(agent.learner, 'lex_lambda', None),
+        'lexicographic_final_k_ema':  getattr(agent.learner, 'lex_k_ema', None),
     }
     with open(os.path.join(exp_dir, 'exp_config.json'), 'w') as f:
         json.dump(exp_config, f, indent=2)
@@ -502,7 +600,13 @@ def main():
     else:
         print(f"   Episodes trained  : {max_episodes}")
     print(f"   K / Z             : {K} / {Z}")
-    print(f"   Final avg reward  : {avg_reward:.2f}")
+    if agent.args.get('lexicographic', False):
+        obj_summary = " | ".join(
+            f"r{i+1}={avg_reward_per_objective[i]:.2f}" for i in range(agent.n_objectives)
+        )
+        print(f"   Final avg reward  : {obj_summary}   (r1=EV, r2=regular vehicles)")
+    else:
+        print(f"   Final avg reward  : {avg_reward:.2f}")
     print(f"   Total time        : {elapsed_h:.2f} hours")
     print(f"{'='*70}\n")
     
@@ -510,37 +614,67 @@ def main():
     # Plot training progress
     # ------------------------------------------------------------------
     episodes = [x['episode'] for x in training_log]
-    rewards  = [x['avg_reward'] for x in training_log]
-    
-    plt.figure(figsize=(10, 5))
-    plt.plot(episodes, rewards, label='Average Reward')
-    
-    # Optional moving average smoothing
-    window = 20
-    if len(rewards) >= window:
-        moving_avg = np.convolve(
-            rewards,
-            np.ones(window) / window,
-            mode='valid'
-        )
-        plt.plot(
-            episodes[window - 1:],
-            moving_avg,
-            label=f'{window}-Episode Moving Average',
-            linewidth=2
-        )
-    
-    plt.xlabel('Episode')
-    plt.ylabel('Average Reward')
-    plt.title('MAPPO Training Progress')
-    plt.grid(True)
-    plt.legend()
-    
-    reward_plot_path = os.path.join(log_save_dir, 'reward_curve.png')
-    plt.savefig(reward_plot_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    print(f"Saved reward curve to: {reward_plot_path}")
+
+    if agent.args.get('lexicographic', False):
+        # NEW FOR LEXICOGRAPHIC MORL: one subplot per objective, so you can
+        # see "EV reward went up, regular-vehicle reward went down" etc.
+        # at a glance instead of one blended curve.
+        n_obj = agent.n_objectives
+        obj_labels = ['r1 (EV priority)', 'r2 (regular vehicles)'] + \
+                     [f'r{i+1}' for i in range(2, n_obj)]
+        fig, axes = plt.subplots(n_obj, 1, figsize=(10, 4 * n_obj), sharex=True)
+        if n_obj == 1:
+            axes = [axes]
+        for i in range(n_obj):
+            r_i = [x['avg_reward_per_objective'][i] for x in training_log]
+            axes[i].plot(episodes, r_i, label=obj_labels[i])
+            window = 20
+            if len(r_i) >= window:
+                moving_avg = np.convolve(r_i, np.ones(window) / window, mode='valid')
+                axes[i].plot(episodes[window - 1:], moving_avg,
+                             label=f'{window}-Episode Moving Average', linewidth=2)
+            axes[i].set_ylabel('Average Reward')
+            axes[i].set_title(obj_labels[i])
+            axes[i].grid(True)
+            axes[i].legend()
+        axes[-1].set_xlabel('Episode')
+        fig.suptitle('MAPPO Training Progress - Lexicographic Objectives')
+        reward_plot_path = os.path.join(log_save_dir, 'reward_curve.png')
+        plt.savefig(reward_plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"Saved per-objective reward curves to: {reward_plot_path}")
+    else:
+        rewards  = [x['avg_reward'] for x in training_log]
+
+        plt.figure(figsize=(10, 5))
+        plt.plot(episodes, rewards, label='Average Reward')
+
+        # Optional moving average smoothing
+        window = 20
+        if len(rewards) >= window:
+            moving_avg = np.convolve(
+                rewards,
+                np.ones(window) / window,
+                mode='valid'
+            )
+            plt.plot(
+                episodes[window - 1:],
+                moving_avg,
+                label=f'{window}-Episode Moving Average',
+                linewidth=2
+            )
+
+        plt.xlabel('Episode')
+        plt.ylabel('Average Reward')
+        plt.title('MAPPO Training Progress')
+        plt.grid(True)
+        plt.legend()
+
+        reward_plot_path = os.path.join(log_save_dir, 'reward_curve.png')
+        plt.savefig(reward_plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"Saved reward curve to: {reward_plot_path}")
 
     sys.stdout.flush()
     sys.stderr.flush()
