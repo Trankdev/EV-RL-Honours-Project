@@ -1,0 +1,86 @@
+# ==================== Model Architecture ====================
+model:
+  name: "MAPPO"
+  network:
+    hidden_dim: 128
+    use_rnn: true
+
+# ==================== MAPPO Algorithm ====================
+algorithm:
+  #name: "final_year_project" use final_year_project in the training/testing script to switch to this config
+  lexicographic:
+    enabled: true
+    tolerance: 0.025         # New (for lexicographic) - how far r1 can drop below its best level before lambda kicks in
+    dual_lr: 0.05           # New (for lexicographic) - how fast lambda reacts
+    ema_rho: 0.05           # New (for lexicographic) - smoothing on the "best level reached" threshold
+    base_weight_decay: 0.3  # New (for lexicographic)
+  gamma: 0.99 # Old?
+  lr: 0.0003  # Old?
+  common_reward: false      # Old? Per-agent reward: each intersection optimises independently
+
+  ppo:
+    eps_clip: 0.2
+    epochs: 4
+    entropy_coef: 0.01
+    q_nstep: 5
+    max_grad_norm: 10.0
+
+  # -----------------------------------------------------------
+  # Observation: routed to _compute_project1_std_observation()
+  #   via algorithm_name = "project1_std_dqn" set in training script.
+  #   Observation state space will be changed in the future and thus this will be wrong in future
+  #   Produces a 68-dim vector:
+  #     [phase_onehot(N_phases)  +  12 lanes × 5 features]
+  #   Each lane's 5 features:
+  #     1. vehicle_count / 17
+  #     2. regular_vehicle avg wait / 100
+  #     3. regular_vehicle wait std  / 100  ⭐
+  #     4. emergency_vehicle max wait / 100
+  #     5. downstream congestion (1=clear, 0=blocked)
+  # -----------------------------------------------------------
+  observation:
+    obs_to_subscribe: ["lane_vehicles", "lane_waiting_time_count"]
+    normalize: false
+    norm_params: {}
+
+  # -----------------------------------------------------------
+  # Reward: routed to _compute_project1_std_reward()
+  #   reward has since been changed so below info is wrong
+  #   formula: -sum(lane_weights * lane_queues) # new reward function, where lane_weights = (1 + Z/EV_norm_tta)
+  #   Z are injected at runtime from CLI args.
+  # -----------------------------------------------------------
+  reward:
+    reward_to_subscribe: ["lane_waiting_time_count"]
+    reward_weights: [1.0]
+    scale: 1.0
+    clip_range: null
+
+  # Z are read by the training script and logged; the reward
+  # function reads them from Rewards.REWARD_CONFIGS at runtime.
+  ambulance:
+    Z: 3.0   # emergency-vehicle penalty multiplier
+
+# ==================== Training Configuration ====================
+training:
+  max_episodes: 200
+  save_interval: 50
+  seed: 42
+
+# ==================== Environment ====================
+environment:
+  type: "sumo"
+  interface: "libsumo"
+  observation_type: "project1_std" # change in future?
+  reward_type: "project1_std" # is changed but function name is same currently, but is for final_year_project reward
+  sync_mode: true
+
+metadata:
+  description: "MAPPO with project1-style std-aware obs+reward for EMV priority TSC"
+  notes: |
+    All of the below info has been changed and is wrong
+    Key differences vs plain mappo.yaml:
+    1. algorithm_name forced to "project1_std_dqn" in training script,
+       which routes obs/reward to project1 implementations.
+    2. Observation is 68-dim: includes waiting-time std and EMV info.
+    3. Reward = -sum(lane_weights * lane_queues) # new reward function, where lane_weights = (1 + Z/EV_norm_tta)
+    4. common_reward=false so each intersection agent gets its own reward.
