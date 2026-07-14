@@ -52,7 +52,7 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
     agent.reset()
 
     agent_ids  = env.get_agent_ids()
-    total_reward = {aid: 0 for aid in agent_ids}
+    total_reward = {aid: np.zeros(agent.n_objectives) for aid in agent_ids}  # NEW FOR LEXICOGRAPHIC MORL
     steps = 0
 
     # Per-intersection accumulators for reward-component stats (one set per agent)
@@ -141,7 +141,7 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
             pass
 
         if verbose and steps % 50 == 0:
-            avg_r = np.mean([total_reward[aid] for aid in agent_ids])
+            avg_r = np.mean([total_reward[aid] for aid in agent_ids], axis=0)[0]
             print(f"    Step {steps:4d}: avg_reward={avg_r:.2f}")
 
         obs = next_obs
@@ -209,11 +209,16 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
     civilian_trip_times    = [t for vid, t in world.vehicles_trip_time.items()
                                if not vid.startswith("ambulance_")]
     civilian_avg_trip_time = np.mean(civilian_trip_times) if civilian_trip_times else 0.0
-    avg_reward             = np.mean([total_reward[aid] for aid in agent_ids])
+    # NEW FOR LEXICOGRAPHIC MORL: total_reward[aid] is (n_objectives,), so
+    # average across agents per-objective rather than blending objectives
+    # together into one meaningless number.
+    avg_reward_per_objective = np.mean([total_reward[aid] for aid in agent_ids], axis=0)
+    avg_reward              = float(avg_reward_per_objective[0])
 
     return {
-        'total_reward':          total_reward,
-        'avg_reward':            float(avg_reward),
+        'total_reward':          {aid: r.tolist() for aid, r in total_reward.items()},
+        'avg_reward':            avg_reward,
+        'avg_reward_per_objective': [float(x) for x in avg_reward_per_objective],
         'steps':                 steps,
         'ambulance_duration':    float(ambulance_duration),
         'civilian_avg_trip_time': float(civilian_avg_trip_time),
@@ -277,6 +282,14 @@ def test_model(
     # ------------------------------------------------------------------
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+
+    # NEW FOR LEXICOGRAPHIC MORL: must match the training run's setting or
+    # the critic's saved state_dict won't load (see the note by env_config
+    # below). Simplest is to keep this flag set the same in both YAML
+    # configs used for training vs. evaluating a given model.
+    lex_cfg = config['algorithm'].get('lexicographic', {})
+    lex_enabled = lex_cfg.get('enabled', False)
+    n_objectives = lex_cfg.get('n_objectives', 2) if lex_enabled else 1
 
     # ------------------------------------------------------------------
     # Resolve Z
@@ -348,7 +361,11 @@ def test_model(
         "sync_mode":             True,
         "obs_to_subscribe":      config['algorithm']['observation']['obs_to_subscribe'],
         "reward_to_subscribe":   config['algorithm']['reward']['reward_to_subscribe'],
-        "algorithm_name":        "final_year_project",   # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
+        # NEW FOR LEXICOGRAPHIC MORL: must match whatever the checkpoint was
+        # actually trained with, or the critic's state_dict won't load (its
+        # output head is sized n_objectives wide) and the reward-vector
+        # shape agent.n_objectives expects downstream won't match either.
+        "algorithm_name":        "final_year_project" + ("_lexicographic" if lex_enabled else ""),   # TODO: IMPORTANT: Sets what Observation state space is being used - change this to be fyp or final_year_project for FYP model (final_year_project_lane_mode for LANE FEATURES VERSION) OR project1_std_dqn for baseline model
         "normalize_observation": config['algorithm']['observation'].get('normalize', False),
         "norm_params":           config['algorithm']['observation'].get('norm_params', {}),
         "reward_weights":        config['algorithm']['reward'].get('reward_weights', [1.0]),
@@ -395,6 +412,13 @@ def test_model(
         obs_last_action=False,
         target_update_interval_or_tau=0.01,
         common_reward=config['algorithm'].get('common_reward', False),
+        # NEW FOR LEXICOGRAPHIC MORL - must match training, see note above
+        n_objectives=n_objectives,
+        lexicographic=lex_enabled,
+        lex_tolerance=lex_cfg.get('tolerance', 0.0),
+        lex_dual_lr=lex_cfg.get('dual_lr', 0.05),
+        lex_ema_rho=lex_cfg.get('ema_rho', 0.05),
+        lex_base_weight_decay=lex_cfg.get('base_weight_decay', 0.1),
     )
 
     if not os.path.exists(model_path):
@@ -406,13 +430,16 @@ def test_model(
     
     algorithm_name = env_config["algorithm_name"]
     print("=" * 70)
-    if algorithm_name == "project1_std_dqn":
+    # NOTE: substring checks here, matching how Observations.py itself
+    # dispatches - exact equality would misfire whenever lexicographic mode
+    # appends "_lexicographic" onto the name.
+    if 'project1' in algorithm_name.lower() or 'std_dqn' in algorithm_name.lower():
         print("\nUsing BASELINE RL (Kodogoda-style) observation/state space\n")
-    elif algorithm_name == "final_year_project":
+    elif 'final_year_project_lane_mode' in algorithm_name.lower():
+         print("\nUsing FINAL YEAR PROJECT !LANE! VERSION observation/state space\n")
+    elif 'final_year_project' in algorithm_name.lower() or 'fyp' in algorithm_name.lower():
         print("\nUsing FINAL YEAR PROJECT observation/state space\n")
         print_fyp_obs_config()
-    elif algorithm_name == "final_year_project_lane_mode":
-         print("\nUsing FINAL YEAR PROJECT !LANE! VERSION observation/state space\n")
     else:
         print(f"\nPotential algorithm name mismatch: {algorithm_name}\n")
     print("=" * 70)
@@ -436,7 +463,18 @@ def test_model(
                                    focus_agent_idx=focus_agent_idx)
         all_results.append(result)
 
-        print(f"reward={result['avg_reward']:7.2f} | "
+        # NEW FOR LEXICOGRAPHIC MORL: show each objective separately so you
+        # can read off "this run got X for EVs, Y for regular vehicles"
+        # directly, instead of one blended number.
+        if agent.args.get('lexicographic', False):
+            reward_str = " | ".join(
+                f"r{i+1}={result['avg_reward_per_objective'][i]:7.2f}"
+                for i in range(agent.n_objectives)
+            )
+        else:
+            reward_str = f"reward={result['avg_reward']:7.2f}"
+
+        print(f"{reward_str} | "
               f"EMV={result['ambulance_duration']:.1f}s | "
               f"civilian={result['civilian_avg_trip_time']:.1f}s | "
               f"reg_group1_wait={result['reg_group1_waiting_mean']:.1f}s | " 
@@ -460,6 +498,16 @@ def test_model(
     civ_mean,      civ_std      = _stats('civilian_avg_trip_time')
     steps_mean,    steps_std    = _stats('steps')
 
+    # NEW FOR LEXICOGRAPHIC MORL: mean/std of each objective's reward
+    # across the evaluation episodes, e.g. reward_per_objective_stats[0]
+    # = (mean, std) for r1 (EV) across all episodes.
+    n_objectives = agent.n_objectives
+    reward_per_objective_stats = [
+        (float(np.mean([r['avg_reward_per_objective'][i] for r in all_results])),
+         float(np.std([r['avg_reward_per_objective'][i] for r in all_results])))
+        for i in range(n_objectives)
+    ]
+
     g1m_m, g1m_s   = _stats('group1_delay_mean')
     g1s_m, g1s_s   = _stats('group1_delay_std')
     g2m_m, g2m_s   = _stats('group2_delay_mean')
@@ -474,7 +522,14 @@ def test_model(
     print(f"\n{'='*80}")
     print("Evaluation Summary  (mean +/- std. dev. across episodes, per-vehicle trip totals)")
     print(f"{'='*80}")
-    print(f"  Avg. reward              : {avg_rew_mean:8.2f} +/- {avg_rew_std:.2f}")
+    if agent.args.get('lexicographic', False):
+        obj_labels = ['r1 (EV priority)', 'r2 (regular vehicles)'] + \
+                     [f'r{i+1}' for i in range(2, n_objectives)]
+        for i in range(n_objectives):
+            m, s = reward_per_objective_stats[i]
+            print(f"  Avg. {obj_labels[i]:<20}: {m:8.2f} +/- {s:.2f}")
+    else:
+        print(f"  Avg. reward              : {avg_rew_mean:8.2f} +/- {avg_rew_std:.2f}")
     print(f"  EV trip time         (s) : {amb_mean:8.2f} +/- {amb_std:.2f}")
     print(f"  Civilian trip time   (s) : {civ_mean:8.2f} +/- {civ_std:.2f}")
     print(f"  Avg steps/episode        : {steps_mean:8.1f} +/- {steps_std:.1f}")
@@ -510,6 +565,10 @@ def test_model(
         # aggregated metrics
         'avg_reward_mean':       avg_rew_mean,
         'avg_reward_std':        avg_rew_std,
+        # NEW FOR LEXICOGRAPHIC MORL: mean/std per objective, e.g.
+        # reward_per_objective_mean[0] = r1 (EV) mean across episodes.
+        'reward_per_objective_mean': [m for m, s in reward_per_objective_stats],
+        'reward_per_objective_std':  [s for m, s in reward_per_objective_stats],
         'ambulance_time_mean':   amb_mean,
         'ambulance_time_std':    amb_std,
         'civilian_time_mean':    civ_mean,
@@ -567,13 +626,14 @@ Examples:
       --Z 5.0 --gui --num-episodes 5 \\
       --save-results evaluations/my_test.json
 """)
-    
+
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/mappo_ambulance_K0.5_Z3.0_seed42_20260707_145938/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
+                        default='experiments/lexico_mappo_ambulance_K0.5_Z3.0_seed42_20260714_154427/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
                         help='Path to the .pt model checkpoint')
     
+    # This one is important for the Reward Function setup (parameters) AND agent model (mappo or lmorl) along with the relevant Hyperparameters - WHICH ARE CONFIGURED WITHIN THE CONFIG .yaml FILE ITSELF!!!
     parser.add_argument('--config', type=str,
-                        default='configs/tsc/mappo_ambulance.yaml', # TODO: Rewards: Factors (e.g. Z and K) for the reward are taken from this - should align with reward being used - from configs/tsc folder - mappo_ambulance for BASELINE, mappo_fyp_config for FYP
+                        default='configs/tsc/mappo_fyp_lexicographic_config.yaml', # TODO: Use mappo_ambulance for BASELINE, mappo_fyp_config for FYP and mappo_fyp_lexicographic_config for lexicographic - from configs/tsc folder
                         help='YAML config used during training (default: configs/tsc/mappo_fyp_config.yaml)')
     parser.add_argument('--scenario-dir', type=str,
                         default='scenarios/3_intersection_corridor_250long', # change to scenario to be tested on
