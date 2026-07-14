@@ -28,6 +28,7 @@ src – Reinforcement Learning environment and agents
   - agents – Contains RL agent implementations
       - DQN – Deep Q-Network (value-based, single-agent)
       - MAPPO – Multi-Agent Proximal Policy Optimisation (actor-critic, multi-agent)
+      - LMORL - Lexicographic Multi-Objective RL
 
   - core – Environment definition and supporting components
       - env.py – Core environment. Defines the World class which maintains the full SUMO simulation state
