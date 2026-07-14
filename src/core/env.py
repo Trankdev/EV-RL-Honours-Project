@@ -967,6 +967,8 @@ class World(parse_sumo_config, gym.Env):
         self.finished_reg_group2_delays = []   # one number per vehicle: its total group2-attributed delay
         self.finished_reg_all_delays = []      # one number per vehicle: total delay (group1+group2)
         self.finished_ev_delays = []           # one number per EV: total delay over its whole trip
+
+
         
         # # test generate observation information
         self.vehicle_trajectory = {}
@@ -1414,7 +1416,6 @@ class World(parse_sumo_config, gym.Env):
             else:
                 raise Exception(f'Info function {fn} not implemented')
 
-    # =====================================
     def step_sim_and_statistics(self): # actually is statistic first and then step sim
         """
         Collect step-level statistics on world level, intersection level, and vehicle level.
@@ -1476,6 +1477,7 @@ class World(parse_sumo_config, gym.Env):
             # arrives mid-decision-window should still have its accrued delay
             # counted when get_reward_statistics() reads it. It clears naturally
             # at the next reset in step_sim_until_time_to_act().  
+
         
         # NEW FOR FYP
         # Track EV lane entry times for delay ratio computation

@@ -104,14 +104,14 @@ class GetRewards(ObservationFunction):
         else:
             roads = self.ts.roads
         # ---------------------------------------------------------------------------------------------------------------
-        # TODO: register it in Registry
+        # old TODO??: register it in Registry
         for r in roads:
             if not self.world.RIGHT:
                 tmp = sorted(self.ts.road_lane_mapping[r], key=lambda ob: int(ob[-1]), reverse=True)
             else:
                 tmp = sorted(self.ts.road_lane_mapping[r], key=lambda ob: int(ob[-1]))
             self.lanes_road_observed.append(tmp)
-            # TODO: rank lanes by lane ranking [0,1,2], assume we only have one digit for ranking
+            # old TODO??: rank lanes by lane ranking [0,1,2], assume we only have one digit for ranking
             
         # subscribe functions
         # Special handling: emergency_vehicle_priority requires low-level data subscription
@@ -128,7 +128,136 @@ class GetRewards(ObservationFunction):
         self.algorithm_name = getattr(world, '_algorithm_name', 'default')
         # Store previous rewards (for difference-based reward if needed)
         self.last_rewards = {fn: None for fn in self.fns_subscribed}
-        
+
+    # =====================================================================
+    # ================= Lexicographic multi-objective reward ==============
+    # =====================================================================
+    # Design: r1 (EV) is priority level 0 (highest), r2 (regular vehicles)
+    # is priority level 1. Both are computed entirely in this file now -
+    # r1 used to read a value cached by env.py, but that's gone: everything
+    # a GetRewards instance needs (self.world.eng, self.world.
+    # vehicle_timeloss_delta) is already available here, so there was no
+    # real reason to split it across two files.
+    #
+    # EVERYTHING YOU'D WANT TO TWEAK LIVES IN THIS FILE:
+    #   - LEXICOGRAPHIC_CONFIG below: scaling constants, weights, etc.
+    #   - _lex_objective_ev_priority() / _lex_objective_regular_vehicles():
+    #     each collects a list of per-vehicle numbers, then has ONE clearly
+    #     marked line that combines the list into the final reward. That's
+    #     the line to change for "try a different formula".
+    #   - LEXICOGRAPHIC_OBJECTIVES: the priority ORDER (index 0 = highest).
+    #
+    # TO ADD A THIRD OBJECTIVE: write a new `_lex_objective_<name>` method
+    # below following the same pattern, add its name to
+    # LEXICOGRAPHIC_OBJECTIVES at whatever priority position you want, and
+    # bump n_objectives in your YAML to match. Nothing else needs to
+    # change - MAPPOagent.py reads n_objectives off the length of the
+    # vector _compute_lexicographic_reward_vector() returns.
+    LEXICOGRAPHIC_OBJECTIVES = [
+        'ev_priority',        # r1 - highest priority - system-wide
+        'regular_vehicles',   # r2 - lowest priority  - local to this intersection
+    ]
+
+    # TODO: config things for lexiocographic reward - IF USING THIS
+
+    LEXICOGRAPHIC_CONFIG = {
+        'ambulance_type_ids': ['ambulance_type', 'emergency'],
+        # Scaling parameters - the first things you'll likely want to play
+        # with. Both multiply the final reward AFTER it's combined below.
+        'ev_scale': 3.0,
+        'reg_scale': 1.0,
+        # Example of the "mean + weight * std" formula you mentioned -
+        # 0.0 reproduces the old plain-sum behaviour exactly. Set it
+        # nonzero to penalise UNEVEN delay (a few very-delayed vehicles)
+        # on top of total delay. See the combine step in
+        # _lex_objective_regular_vehicles() for how this gets used.
+        'reg_std_weight': 0.5,
+    }
+
+    def _lex_objective_ev_priority(self) -> float: # TODO: modify this if want to try different r1 computations (EV)
+        """
+        r1: system-wide EV objective. Looks at EVERY vehicle currently in
+        the simulation (not just this intersection's lanes) because a
+        single EV's delay is a corridor-wide property - this makes r1
+        identical across J1/J2/J3 automatically, without needing any
+        broadcast/caching machinery in env.py.
+        """
+        cfg = self.LEXICOGRAPHIC_CONFIG
+        ambulance_type_ids = cfg['ambulance_type_ids']
+        eng = self.world.eng
+
+        delays = []
+        try:
+            for veh_id in eng.vehicle.getIDList():
+                try:
+                    if eng.vehicle.getTypeID(veh_id) in ambulance_type_ids:
+                        delays.append(self.world.vehicle_timeloss_delta.get(veh_id, 0.0))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # ---- COMBINE STEP: this is the line to edit for a different r1 formula ----
+        # 0.0 (neutral, not a penalty) whenever there's no EV at all - this
+        # is what keeps r1 well-behaved during EV-free stretches, see
+        # _update_lexicographic_duals in MAPPOagent.py for how that's used.
+        combined = sum(delays) if delays else 0.0
+
+        return -float(combined) * cfg['ev_scale']
+
+    def _lex_objective_regular_vehicles(self) -> float: # TODO: modify this if want to try different r2 computations (regular vehs)
+        """
+        r2: local regular-vehicle objective for THIS intersection only.
+        Group1/group2 are NOT split here (that split remains available for
+        diagnostics via get_reward_statistics(), it's just not used to
+        gate training)
+        """
+        cfg = self.LEXICOGRAPHIC_CONFIG
+        ambulance_type_ids = cfg['ambulance_type_ids']
+        eng = self.world.eng
+
+        delays = []
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+                except Exception:
+                    continue
+                for veh_id in vehicle_ids:
+                    try:
+                        if eng.vehicle.getTypeID(veh_id) in ambulance_type_ids:
+                            continue
+                        delays.append(self.world.vehicle_timeloss_delta.get(veh_id, 0.0))
+                    except Exception:
+                        continue
+
+        # ---- COMBINE STEP: this is the line to edit for a different r2 formula ----
+        # Default (reg_std_weight=0.0): plain total delay, same as before.
+        # Your "mean wait + 1/2 std" idea would be:
+        #     combined = np.mean(delays) + cfg['reg_std_weight'] * np.std(delays)
+        # with reg_std_weight=0.5. As written below it's a hybrid you can
+        # dial between the two with one config number: total delay, plus an
+        # extra penalty for how UNEVENLY that delay is spread across
+        # vehicles (reg_std_weight=0 reproduces the old sum-only behaviour).
+        if delays:
+            combined = np.sum(delays) + cfg['reg_std_weight'] * np.std(delays)
+        else:
+            combined = 0.0
+
+        return -float(combined) * cfg['reg_scale']
+
+    def _compute_lexicographic_reward_vector(self) -> np.ndarray:
+        """
+        Returns np.array([r1, r2, ...]) in priority order (index 0 = highest
+        priority), built from LEXICOGRAPHIC_OBJECTIVES. This is what feeds
+        the lexicographic MAPPO critic/actor - see MAPPOagent.py.
+        """
+        values = []
+        for name in self.LEXICOGRAPHIC_OBJECTIVES:
+            fn = getattr(self, f'_lex_objective_{name}')
+            values.append(fn())
+        return np.array(values, dtype=np.float32)
+
     def _compute_emergency_priority_reward(self):
         """
         Compute emergency vehicle priority reward.
@@ -183,6 +312,12 @@ class GetRewards(ObservationFunction):
         if 'project1' in self.algorithm_name.lower() or 'std_dqn' in self.algorithm_name.lower():
             return self._compute_project1_std_reward()
         
+        # Lexicographic multi-objective case - returns a VECTOR (np.ndarray),
+        # not a float. Everything downstream (env.py, parlenv.py,
+        # MAPPOagent.py) is written to accept either shape.
+        if 'lexicographic' in self.algorithm_name.lower() or 'lmorl' in self.algorithm_name.lower():
+            return self._compute_lexicographic_reward_vector()
+
         # final year project case - mirrors above logic
         if 'final_year_project' in self.algorithm_name.lower() or 'fyp' in self.algorithm_name.lower():
             return self._compute_project1_std_reward()

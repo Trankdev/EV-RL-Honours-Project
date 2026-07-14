@@ -48,7 +48,7 @@ class PARLSumoEnv:
     def reset(self):
         """Returns: obs_dict"""
         obs = self.env.reset()
-        # ✅ 在reset之后封闭指定道路
+        # After reset, close specified roads
         if self.closed_edges:
             print(f"\n🚧 Closing roads and replanning affected vehicle routes...")
             self.env.close_edges(self.closed_edges)
@@ -84,8 +84,20 @@ class PARLSumoEnv:
                 result_obs[agent_id] = observation.astype(np.float32, copy=True)
             else:
                 result_obs[agent_id] = np.array(observation, dtype=np.float32)
-        # PARL expects scalar rewards
-        rewards = {agent_id: float(reward.item()) if hasattr(reward, 'item') else float(reward)
+        # PARL / MAPPOagent now expects rewards as arrays with an explicit
+        # objective dimension, always. Scalar-reward algorithms (the
+        # existing project1/fyp reward functions) return a plain float from
+        # GetRewards.compute_reward() - those get wrapped as shape-(1,)
+        # arrays here so downstream code (MAPPOagent.py) has one consistent
+        # interface whether n_objectives is 1 (legacy) or >1 (lexicographic).
+        # NEW FOR LEXICOGRAPHIC MORL - previously this did
+        # float(reward.item()) which silently discarded any extra
+        # objectives; do not reintroduce that collapse here.
+        def _to_reward_array(reward):
+            if isinstance(reward, np.ndarray):
+                return reward.astype(np.float32)
+            return np.array([reward], dtype=np.float32)
+        rewards = {agent_id: _to_reward_array(reward)
                 for agent_id, reward in rewards.items()}
         
         # Extract episode done
