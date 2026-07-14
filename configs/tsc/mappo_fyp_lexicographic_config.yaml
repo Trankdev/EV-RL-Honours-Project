@@ -10,15 +10,15 @@ algorithm:
   #name: "final_year_project" use final_year_project in the training/testing script to switch to this config
   lexicographic:
     enabled: true
-    tolerance: 0.025         # New (for lexicographic) - how far r1 can drop below its best level before lambda kicks in
-    dual_lr: 0.05           # New (for lexicographic) - how fast lambda reacts
-    ema_rho: 0.05           # New (for lexicographic) - smoothing on the "best level reached" threshold
-    base_weight_decay: 0.3  # New (for lexicographic)
-  gamma: 0.99 # Old?
-  lr: 0.0003  # Old?
-  common_reward: false      # Old? Per-agent reward: each intersection optimises independently
+    tolerance: 0.025         # New (for lexicographic) - How far r1 is allowed to drop below the best level it's reached so far before λ1 starts growing. Smaller = stricter EV protection, but more likely to fight r2 constantly. Larger = more slack for r2 to improve, more risk of EV regressing before it's caught.
+    dual_lr: 0.05           # New (for lexicographic) - How fast λ1 reacts. Higher = snaps back quickly when r1 dips (more rigid enforcement, can be jumpy). Lower = smoother but slower to correct a regression.
+    ema_rho: 0.05           # New (for lexicographic) - Smoothing on the "best level r1 has reached" reference itself. This reference only ever ratchets *up* (never silently lowers the bar), ρ just controls how quickly a new best level gets absorbed into that reference.
+    base_weight_decay: 0.3  # New (for lexicographic) - Sets the fixed background weight every objective gets regardless of λ, decaying by priority (r1 gets more than r2 by default). This exists so r1 still improves early in training, before there's anything for λ to defend yet.
+  gamma: 0.99 # PPO discount factor used for n-step return computation
+  lr: 0.0003  # Learning rate for both actor and critic optimizers
+  common_reward: false # Currently ignored by this MAPPO implementation (per-agent rewards are always stored directly).
 
-  ppo:
+  ppo: # Still used. Lexicographic modifies only the actor objective; PPO clipping, entropy, epochs, n-step returns and gradient clipping remain unchanged.
     eps_clip: 0.2
     epochs: 4
     entropy_coef: 0.01
