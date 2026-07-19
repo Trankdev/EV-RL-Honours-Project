@@ -164,17 +164,38 @@ class GetRewards(ObservationFunction):
         'ambulance_type_ids': ['ambulance_type', 'emergency'],
         # Scaling parameters - the first things you'll likely want to play
         # with. Both multiply the final reward AFTER it's combined below.
-        'ev_scale': 3.0,
+        'ev_scale': 1.0,
         'reg_scale': 1.0,
+
+        # ---- r2 mode switch ----
+        # 'pooled'      : all non-EV vehicles observed by this intersection
+        #                 pooled into one delay list (original behaviour).
+        # 'group_split' : split into group1 (vehicles ahead of the EV, in
+        #                 its lane) and group2 (everyone else), each with
+        #                 its own scale + std weight. See
+        #                 _lex_r2_group_split() for the exact formula.
+        'reg_mode': 'pooled', # TODO: pick if you use All reg vehs (pooled) or group 1 and group 2 (group_split) for R2
+
+        # --- pooled-mode params ---
         # Example of the "mean + weight * std" formula you mentioned -
         # 0.0 reproduces the old plain-sum behaviour exactly. Set it
         # nonzero to penalise UNEVEN delay (a few very-delayed vehicles)
-        # on top of total delay. See the combine step in
-        # _lex_objective_regular_vehicles() for how this gets used.
+        # on top of total delay.
         'reg_std_weight': 0.5,
+
+        # --- group_split-mode params ---
+        # combined = sum(g1)*group1_scale + sum(g2)*group2_scale
+        #          + std(g1)*group1_std_weight + std(g2)*group2_std_weight
+        # then the whole thing is scaled by reg_scale, same as pooled mode -
+        # so reg_scale always controls r1-vs-r2 balance, and
+        # group1_scale/group2_scale only control the balance WITHIN r2.
+        'group1_scale': 1.5,
+        'group2_scale': 1.0,
+        'group1_std_weight': 0,
+        'group2_std_weight': 0,
     }
 
-    def _lex_objective_ev_priority(self) -> float: # TODO: modify this if want to try different r1 computations (EV)
+    def _lex_objective_ev_priority(self) -> float: # modify this if want to try different r1 computations (EV)
         """
         r1: system-wide EV objective. Looks at EVERY vehicle currently in
         the simulation (not just this intersection's lanes) because a
@@ -205,12 +226,28 @@ class GetRewards(ObservationFunction):
 
         return -float(combined) * cfg['ev_scale']
 
-    def _lex_objective_regular_vehicles(self) -> float: # TODO: modify this if want to try different r2 computations (regular vehs)
+    def _lex_objective_regular_vehicles(self) -> float:
         """
         r2: local regular-vehicle objective for THIS intersection only.
-        Group1/group2 are NOT split here (that split remains available for
-        diagnostics via get_reward_statistics(), it's just not used to
-        gate training)
+        Dispatches on LEXICOGRAPHIC_CONFIG['reg_mode']:
+          'pooled'      -> _lex_r2_pooled()
+          'group_split' -> _lex_r2_group_split()
+        Both return the same thing: a single float, already scaled by
+        reg_scale, ready to drop straight into the reward vector.
+        """
+        cfg = self.LEXICOGRAPHIC_CONFIG
+        mode = cfg.get('reg_mode', 'pooled')
+        if mode == 'group_split':
+            return self._lex_r2_group_split()
+        return self._lex_r2_pooled()
+
+    def _lex_r2_pooled(self) -> float: # this is the function for the mode where you treat ALL regular vehicles equally (for R2)
+        """
+        r2 (pooled mode): every non-EV vehicle observed by this
+        intersection pooled into one delay list - group1/group2 are NOT
+        distinguished here (that split is available for diagnostics via
+        get_reward_statistics(), it's just not used to gate training in
+        this mode).
         """
         cfg = self.LEXICOGRAPHIC_CONFIG
         ambulance_type_ids = cfg['ambulance_type_ids']
@@ -231,18 +268,99 @@ class GetRewards(ObservationFunction):
                     except Exception:
                         continue
 
-        # ---- COMBINE STEP: this is the line to edit for a different r2 formula ----
+        # ---- COMBINE STEP: this is the line to edit for a different pooled r2 formula ----
         # Default (reg_std_weight=0.0): plain total delay, same as before.
-        # Your "mean wait + 1/2 std" idea would be:
-        #     combined = np.mean(delays) + cfg['reg_std_weight'] * np.std(delays)
-        # with reg_std_weight=0.5. As written below it's a hybrid you can
-        # dial between the two with one config number: total delay, plus an
-        # extra penalty for how UNEVENLY that delay is spread across
-        # vehicles (reg_std_weight=0 reproduces the old sum-only behaviour).
+        # reg_std_weight>0 adds an extra penalty for how UNEVENLY that
+        # delay is spread across vehicles.
         if delays:
             combined = np.sum(delays) + cfg['reg_std_weight'] * np.std(delays)
         else:
             combined = 0.0
+
+        return -float(combined) * cfg['reg_scale']
+
+    def _lex_r2_group_split(self) -> float: # this is the function for the mode where you split regular vehicles into Groups 1 (EV blocking) and Groups 2 (all other reg vehs) for Reward 2 (R2) computation
+        """
+        r2 (group_split mode): separates this intersection's non-EV
+        vehicles into group1 (ahead of the EV, in its lane - the ones that
+        can actually block it) and group2 (everyone else), each with its
+        own scale and std weight:
+
+            combined = sum(g1)*group1_scale + sum(g2)*group2_scale
+                     + std(g1)*group1_std_weight + std(g2)*group2_std_weight
+
+        then scaled by reg_scale (same overall r1-vs-r2 balance knob as
+        pooled mode - group1_scale/group2_scale only control the balance
+        WITHIN r2). If no EV is present this step, every regular vehicle
+        falls into group2 by definition (there's nothing to be "ahead of"),
+        matching the convention already used in get_reward_statistics().
+
+        EV detection here only tracks the FIRST EV found per intersection,
+        same limitation as elsewhere in this file (get_reward_statistics(),
+        the old project1_std_reward_new) - fine for the current
+        single-EV-at-a-time scenario, would need extending for multi-EV.
+        """
+        cfg = self.LEXICOGRAPHIC_CONFIG
+        ambulance_type_ids = cfg['ambulance_type_ids']
+        eng = self.world.eng
+
+        # --- STEP 1: find the (first) EV in this intersection's lanes ---
+        EV_present = False
+        EV_lane_id = None
+        EV_position = None
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+                    for veh_id in vehicle_ids:
+                        if eng.vehicle.getTypeID(veh_id) in ambulance_type_ids:
+                            EV_present = True
+                            EV_lane_id = eng.vehicle.getLaneID(veh_id)
+                            EV_position = eng.vehicle.getLanePosition(veh_id)
+                            break
+                    if EV_present:
+                        break
+                except Exception:
+                    continue
+            if EV_present:
+                break
+
+        # --- STEP 2: split non-EV vehicles into group1 / group2 ---
+        delays_g1 = []
+        delays_g2 = []
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+                except Exception:
+                    continue
+                for veh_id in vehicle_ids:
+                    try:
+                        if eng.vehicle.getTypeID(veh_id) in ambulance_type_ids:
+                            continue
+                        delay = self.world.vehicle_timeloss_delta.get(veh_id, 0.0)
+                        if EV_present and lane_id == EV_lane_id:
+                            veh_position = eng.vehicle.getLanePosition(veh_id)
+                            if veh_position > EV_position:
+                                delays_g1.append(delay)
+                            else:
+                                delays_g2.append(delay)
+                        else:
+                            delays_g2.append(delay)
+                    except Exception:
+                        continue
+
+        # ---- COMBINE STEP: this is the line to edit for a different group_split r2 formula ----
+        sum_g1 = np.sum(delays_g1) if delays_g1 else 0.0
+        sum_g2 = np.sum(delays_g2) if delays_g2 else 0.0
+        std_g1 = np.std(delays_g1) if delays_g1 else 0.0
+        std_g2 = np.std(delays_g2) if delays_g2 else 0.0
+
+        combined = (
+            sum_g1 * cfg['group1_scale'] + sum_g2 * cfg['group2_scale']
+            + std_g1 * cfg['group1_std_weight'] + std_g2 * cfg['group2_std_weight']
+        )
 
         return -float(combined) * cfg['reg_scale']
 
@@ -257,6 +375,8 @@ class GetRewards(ObservationFunction):
             fn = getattr(self, f'_lex_objective_{name}')
             values.append(fn())
         return np.array(values, dtype=np.float32)
+    
+    # ========================================================================
 
     def _compute_emergency_priority_reward(self):
         """
