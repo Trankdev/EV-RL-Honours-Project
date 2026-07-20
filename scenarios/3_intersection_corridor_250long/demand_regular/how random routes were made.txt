@@ -1,0 +1,33 @@
+1. Open Command Prompt
+
+2. Navigate to Scenario Directory and set as working directory "cd /d D:\SUMO\rl-curriculum-learning-emergency-traffic-control\scenarios\3_intersection_corridor_250long" for me
+
+3. Run this randomTrips.py by:
+"python D:\SUMO\tools\randomTrips.py ^
+    -n 3_intersection_corridor_250long.net.xml^
+    -o reg_2200_v2.trips.xml ^
+    -b 0 ^
+    -e 3600 ^
+    --period 1.64 ^
+    --fringe-factor 10 ^
+    --validate ^
+    --random" 
+or whatever settings you want for your random trip demand and network you are aiming to use
+
+4. Then convert this into a .rou.xml file using duarouter
+"duarouter ^
+    -n 3_intersection_corridor_250long.net.xml ^
+    --route-files reg_2200_v2.trips.xml ^
+    -o reg_2200_v2.rou.xml"
+And wallah, you have your random route files
+
+
+Period for demands
+900 - 4
+1200 - 3
+1400 - 2.57
+1600 - 2.25
+1800 - 2
+2200 - 1.64
+2700 - 1.33
+3600 - 1
