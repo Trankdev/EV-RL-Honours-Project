@@ -50,8 +50,21 @@ class parse_sumo_config(): # Does static information extraction affect parallel 
         else:
             sumo_cmd = [sumolib.checkBinary('sumo')]
         if not self.sumo_dict.get('combined_file'):
+            # NEW FOR FYP: flowFile may be a comma-separated list of route
+            # files (e.g. "vtypes_rou.xml,demand_regular/reg_1800_v1.rou.xml,
+            # demand_ev/ev_100s_v1.rou.xml"). Previously this branch did
+            # os.path.join(dir, flowFile) on the WHOLE comma string, which
+            # only prefixed `dir` onto the first filename - every filename
+            # after the first comma was resolved relative to the process's
+            # working directory instead of the scenario dir, and would fail
+            # to load unless the two happened to coincide. Join each
+            # filename with `dir` individually instead.
+            route_files = ','.join(
+                os.path.join(self.sumo_dict['dir'], f.strip())
+                for f in self.sumo_dict['flowFile'].split(',')
+            )
             sumo_cmd += ['-n', os.path.join(self.sumo_dict['dir'], self.sumo_dict['roadnetFile']),
-                        '-r', os.path.join(self.sumo_dict['dir'], self.sumo_dict['flowFile']),
+                        '-r', route_files,
                         '--no-warnings', str(self.sumo_dict['no_warning'])]
         else:
             sumo_cmd += ['-c', os.path.join(self.sumo_dict['dir'], self.sumo_dict['combined_file']),
@@ -1859,6 +1872,79 @@ class World(parse_sumo_config, gym.Env):
     def get_traffic_scale(self):
         """Get the current traffic scaling factor"""
         return self.traffic_scale
+
+    # NEW FOR FYP: swap which regular-demand and EV-demand route files SUMO
+    # loads on the next reset(). Mirrors set_traffic_scale() - same
+    # "call before reset()" contract, since SUMO only reads its route files
+    # at process startup. Lets one long-lived World/PARLSumoEnv instance be
+    # reused across training episodes while varying demand per episode
+    # (e.g. for curriculum training / domain randomization), instead of
+    # constructing a brand new env every episode.
+    #
+    # Also forces combined_file off, so generate_sumo_cmd() takes the
+    # -n/-r branch (which reads flowFile) instead of -c (.sumocfg), since
+    # a single .sumocfg can only point at one fixed combination of files -
+    # not practical once you have multiple regular x EV file combinations.
+    def set_demand_files(self, regular_route_file: str, ev_route_file: str,
+                          vtypes_file: str = None):
+        """
+        Set which regular-demand and EV-demand .rou.xml files to load on
+        the next reset(). Paths are relative to self.sumo_dict['dir']
+        (the scenario directory) - e.g. "demand_regular/reg_1800_v1.rou.xml".
+
+        ⚠️ Note: must be called before reset() to take effect, same as
+        set_traffic_scale().
+
+        Args:
+            regular_route_file: path (relative to scenario dir) of the
+                .rou.xml with civilian vehicle demand for this episode.
+            ev_route_file: path (relative to scenario dir) of the .rou.xml
+                with ambulance/EV trips for this episode.
+            vtypes_file: shared vehicle-type definitions file. Defaults to
+                whatever vtypes file is already first in the current
+                flowFile (or 'vtypes_rou.xml' if none is set yet) - usually
+                you don't need to pass this, it doesn't change per episode.
+
+        Example:
+            >>> env.set_demand_files(
+            ...     'demand_regular/reg_1800_v1.rou.xml',
+            ...     'demand_ev/ev_100s_v2.rou.xml')
+            >>> obs = env.reset()  # new demand takes effect on this reset
+        """
+        if vtypes_file is None:
+            existing = self.sumo_dict.get('flowFile', '')
+            vtypes_file = existing.split(',')[0].strip() if existing else 'vtypes_rou.xml'
+
+        self.sumo_dict['flowFile'] = f"{vtypes_file},{regular_route_file},{ev_route_file}"
+        self.sumo_dict['combined_file'] = None  # force the -n/-r branch, not -c
+        self.sumo_cmd = self.generate_sumo_cmd()
+
+        print(f"✅ Demand files set for next reset: "
+              f"reg='{regular_route_file}', ev='{ev_route_file}' "
+              f"(will take effect on next reset)")
+
+    def get_demand_files(self):
+        """Return the (vtypes, regular, ev) route files currently configured."""
+        flow = self.sumo_dict.get('flowFile', '')
+        parts = [p.strip() for p in flow.split(',')]
+        while len(parts) < 3:
+            parts.append(None)
+        return tuple(parts[:3])
+
+    def set_seed(self, seed: int):
+        """
+        Set the SUMO random seed for the next reset(). With your current
+        route files (fixed explicit <trip>/<vehicle> depart times, no
+        <flow> elements) this does NOT change vehicle timing/routes - only
+        minor SUMO-internal randomness (e.g. driver imperfection). Provided
+        so seed can still be varied per training episode like your test
+        script already does, and so it's ready if you switch any demand
+        file to stochastic <flow> definitions later.
+
+        ⚠️ Note: must be called before reset() to take effect.
+        """
+        self.seed = seed
+        self.sumo_cmd = self.generate_sumo_cmd()
         
     def observation_spaces(self, ts_id: str):
         """

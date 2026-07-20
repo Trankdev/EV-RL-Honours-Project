@@ -142,3 +142,21 @@ class PARLSumoEnv:
     def get_traffic_scale(self):
         """Get current traffic scaling factor"""
         return self.env.get_traffic_scale()
+
+    # NEW FOR FYP: pass-throughs for per-episode demand-file / seed
+    # variation (curriculum training / domain randomization). Same
+    # "call before reset()" contract as set_traffic_scale above.
+    def set_demand_files(self, regular_route_file: str, ev_route_file: str,
+                          vtypes_file: str = None):
+        """Set which regular-demand and EV-demand .rou.xml files to load
+        on the next reset(). See World.set_demand_files() for details."""
+        self.env.set_demand_files(regular_route_file, ev_route_file, vtypes_file)
+
+    def get_demand_files(self):
+        """Return the (vtypes, regular, ev) route files currently configured."""
+        return self.env.get_demand_files()
+
+    def set_seed(self, seed: int):
+        """Set the SUMO seed to use on the next reset(). See
+        World.set_seed() for details/caveats."""
+        self.env.set_seed(seed)
