@@ -15,6 +15,7 @@ Key differences vs test_parl_mappo.py:
 import os
 import sys
 import json
+import csv
 import random
 import numpy as np
 import argparse
@@ -198,6 +199,18 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
     all_mean, all_std, all_n = _vehicle_stats(world.finished_reg_all_delays)
     ev_mean, ev_std, ev_n   = _vehicle_stats(world.finished_ev_delays)
 
+    # NEW: raw per-vehicle delay values for THIS episode, copied out before
+    # the next env.reset() clears world.finished_*_delays. This is the
+    # underlying data behind the mean/std above - kept so test_model() can
+    # pool it across episodes for histogram/fitted-curve plots instead of
+    # only ever seeing the reduced (mean, std, n) summary.
+    ep_raw_delays = {
+        'group1':  [float(x) for x in world.finished_reg_group1_delays],
+        'group2':  [float(x) for x in world.finished_reg_group2_delays],
+        'all_reg': [float(x) for x in world.finished_reg_all_delays],
+        'ev':      [float(x) for x in world.finished_ev_delays],
+    }
+
     # Episode-level averages: per-intersection, global (pooled), and the
     # single "focus" intersection (kept as top-level keys for backward compat)
     focus_aid = agent_ids[focus_agent_idx]
@@ -273,7 +286,49 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
         'group2_delay_mean': g2_mean, 'group2_delay_std': g2_std, 'group2_delay_n': g2_n,
         'all_reg_delay_mean': all_mean, 'all_reg_delay_std': all_std, 'all_reg_delay_n': all_n,
         'ev_delay_mean': ev_mean, 'ev_delay_std': ev_std, 'ev_delay_n': ev_n,
+        # NEW: raw per-vehicle delay values for this episode (for histogram /
+        # distribution plots downstream - see plot_delay_distributions.py).
+        'raw_delays': ep_raw_delays,
     }
+
+
+# ============================================================================
+# NEW: raw per-vehicle delay CSV export
+# ============================================================================
+# Written automatically alongside the JSON (same --save-results run, no
+# extra step) purely so you have something easy to open in Excel and eyeball
+# - which demand files went with which episode, how many vehicles landed in
+# each group, spot-checking values, etc. The JSON's 'raw_delays' arrays stay
+# the actual input to plot_delay_distributions.py; this CSV is a read-only
+# human-friendly view of the exact same numbers, not a separate source of
+# truth - so there's nothing to keep in sync and nothing to manually type.
+#
+# Long/"tidy" format (one row per vehicle) rather than one column per
+# vehicle: Group 2 alone can be ~300-400 vehicles in a single episode, so a
+# wide layout would mean hundreds of columns. In Excel you can still filter
+# or pivot-table this by 'group' and 'episode' to see any slice you want.
+_CSV_GROUP_LABELS = {
+    'ev':      'EV',
+    'group1':  'Group1',
+    'group2':  'Group2',
+    'all_reg': 'AllReg',
+}
+
+
+def _write_raw_delays_csv(all_results, csv_path):
+    """One row per finished vehicle: episode, demand files for that episode,
+    which group it belongs to, and its total trip delay in seconds."""
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['episode', 'regular_demand_file', 'ev_demand_file',
+                          'group', 'delay_s'])
+        for i, r in enumerate(all_results):
+            ep = i + 1
+            reg_file = r.get('regular_demand_file', '')
+            ev_file = r.get('ev_demand_file', '')
+            for group_key, group_label in _CSV_GROUP_LABELS.items():
+                for delay in r['raw_delays'][group_key]:
+                    writer.writerow([ep, reg_file, ev_file, group_label, delay])
 
 
 # ============================================================================
@@ -553,6 +608,18 @@ def test_model(
     env.close()
 
     # ------------------------------------------------------------------
+    # NEW: pool raw per-vehicle delays across all episodes of this run.
+    # Each all_results[i]['raw_delays'][group] is one episode's list; for a
+    # histogram/fitted-curve you want every vehicle from every episode of
+    # this run pooled together (that's what turns "45 EV data points per
+    # run" into a distribution worth plotting).
+    # ------------------------------------------------------------------
+    pooled_raw_delays = {
+        group: [d for r in all_results for d in r['raw_delays'][group]]
+        for group in ('group1', 'group2', 'all_reg', 'ev')
+    }
+
+    # ------------------------------------------------------------------
     # Aggregate statistics
     # ------------------------------------------------------------------
     def _stats(key):
@@ -670,6 +737,9 @@ def test_model(
         # (only meaningful when algorithm_name == "final_year_project")
         'fyp_obs_config':        FYP_OBS_CONFIG,
         'fyp_obs_dims':          dict(zip(('intersection_dim', 'per_lane_dim'), get_fyp_observation_dims())),
+        # NEW: raw per-vehicle delays pooled across all episodes of this run,
+        # one array per group - the input plot_delay_distributions.py expects.
+        'raw_delays':            pooled_raw_delays,
         # per-episode detail
         'all_results':           all_results,
     }
@@ -681,6 +751,13 @@ def test_model(
         with open(save_results, 'w') as f:
             json.dump(summary, f, indent=2, default=str)
         print(f"Results saved to: {save_results}\n")
+
+        # NEW: companion CSV, same data, for opening in Excel (see
+        # _write_raw_delays_csv() docstring above for why this is safe to
+        # regenerate every run rather than something you hand-edit)
+        csv_path = os.path.splitext(save_results)[0] + '_raw_delays.csv'
+        _write_raw_delays_csv(all_results, csv_path)
+        print(f"Raw per-vehicle delays (for Excel) saved to: {csv_path}\n")
 
     return summary
 
@@ -709,7 +786,7 @@ Examples:
 """)
 
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/CLlite_Z=10_baselinerew_mappo_ambulance_K0.5_Z10.0_seed42_20260723_164905/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
+                        default='experiments/bestmodel_mappo_ambulance_K0.5_Z40_seed42_20260804_210135/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
                         help='Path to the .pt model checkpoint')
     
     # This one is important for the Reward Function setup (parameters) AND agent model (mappo or lmorl) along with the relevant Hyperparameters - WHICH ARE CONFIGURED WITHIN THE CONFIG .yaml FILE ITSELF!!!
@@ -740,8 +817,11 @@ Examples:
                         help='Use stochastic policy (default: deterministic)')
     parser.add_argument('--verbose', action='store_true',
                         help='Print step-level progress every 50 steps')
-    parser.add_argument('--save-results', type=str, default=None,
+    
+    #                                               default=None or default='evaluations/filename_to_save_as.json'
+    parser.add_argument('--save-results', type=str, default='evaluations/z=40_best_core.json', # TODO: set 'default=None' for no results saved. Set 'evaluations/[test name].json' to save some results, e.g. 'evaluations/baseline.json' to save a run and indicate you used the baseline model
                         help='Path to save JSON result file')
+    
     parser.add_argument('--focus-agent-idx', type=int, default=0, # can change this default='x' x value to get a different intersection of interest in evaluation metric summary
                         help='Index (into agent_ids) of the single intersection to '
                              'report individually, in addition to the global metrics (default: 0)')
