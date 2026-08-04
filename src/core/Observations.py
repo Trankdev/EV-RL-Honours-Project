@@ -29,7 +29,7 @@ FYP_OBS_CONFIG = {
     # --- Intersection-level (single closest EV) ---
     'ev_delay_metric':       {'enabled': False,  'mode': 'delay_ratio'},              # mode: 'delay_ratio' | 'waiting_time'
     'ev_urgency':            {'enabled': True,  'mode': 'speed_distance'},           # mode: 'tta' | 'speed' | 'distance' | 'speed_distance' | 'none'
-    'ev_veh_count_ahead':    {'enabled': True},   # [NEW] vehicles between the closest EV and the stop line, normalized by that lane's capacity
+    'ev_veh_count_ahead':    {'enabled': False},   # [NEW] vehicles between the closest EV and the stop line, normalized by that lane's capacity
     'ev_dist_to_next_veh':   {'enabled': True},   # [NEW] gap from the closest EV to the nearest vehicle ahead of it, normalized by lane length
 
     # --- Per-lane ---
@@ -38,7 +38,7 @@ FYP_OBS_CONFIG = {
     'waiting_std':           {'enabled': False},
     'downstream_occupancy':  {'enabled': True},
     'ev_in_lane_indicator':  {'enabled': True},   # [NEW] per lane: 1.0 if any EV is present in that lane, else 0.0 - this is very important for enabling the agent to easily detect when an EV is present
-    'lane_served_indicator': {'enabled': True},   # [NEW] per lane: 1.0 if that lane currently has a green movement, else 0.0
+    'lane_served_indicator': {'enabled': False},   # [NEW] per lane: 1.0 if that lane currently has a green movement, else 0.0
 }
 
 # Dimensionality contributed by each ev_urgency mode
@@ -728,13 +728,12 @@ class Observation(ObservationFunction):
                     if cfg['ev_veh_count_ahead']['enabled']:
                         ev_veh_count_ahead = min(len(vehicles_ahead) / self._lane_capacities[lane_idx], 1.0)
                     if cfg['ev_dist_to_next_veh']['enabled']:
-                        lane_length = eng.lane.getLength(ev_found_lane)
                         if vehicles_ahead:
+                            lane_length = eng.lane.getLength(ev_found_lane)
                             nearest_gap = min(v['position'] - ev_found_position for v in vehicles_ahead)
-                        else:
-                            nearest_gap = lane_length - ev_found_position
-                        if lane_length > 0:
-                            ev_dist_to_next_veh = 1.0 - max(0.0, min(nearest_gap / lane_length, 1.0))
+                            if lane_length > 0:
+                                ev_dist_to_next_veh = 1.0 - max(0.0, min(nearest_gap / lane_length, 1.0))
+                        # else: no vehicle ahead -> leave at its 0.0 default
                 except Exception:
                     pass
 

@@ -79,7 +79,24 @@ class GetRewards(ObservationFunction):
             'base_reward': 50.0,  # base reward value
             'scale': 1.0,
             'clip_range': None,
-            'ambulance_type_ids': ['ambulance_type', 'emergency']  # emergency vehicle type list
+            'ambulance_type_ids': ['ambulance_type', 'emergency'],  # emergency vehicle type list
+            # NEW: which per-vehicle EV metric feeds ev_mean/ev_std in
+            # _compute_project1_std_reward(). Options:
+            #   'waiting_time'     -> eng.vehicle.getAccumulatedWaitingTime(veh_id)
+            #                         (same metric as OLD/baseline used for EVs;
+            #                         capped at 100s, only counts near-full stops)
+            #   'delay_window'     -> self.world.vehicle_timeloss_delta.get(veh_id) <------------ THIS IS THE ONE FOR THE BEST RESULTS (have to set Z value high though (like 50s))
+            #                         (CURRENT default: per-decision-window delta,
+            #                         small magnitude, resets every step, doesn't
+            #                         persist across the EV's time at this intersection)
+            #   'delay_cumulative' -> eng.vehicle.getTimeLoss(veh_id)
+            #                         (SUMO's own running cumulative delay for this
+            #                         vehicle since it entered the sim - same
+            #                         "any slowdown counts" concept as delay_window,
+            #                         but persistent like waiting_time is, and needs
+            #                         no manual per-episode reset since it's scoped
+            #                         to the vehicle's own lifetime in the simulation)
+            'ev_metric_mode': 'delay_window', # TODO: change this depending what reward thingy to use
         },
         'final_year_project_reward': { # new final year project reward
             'description': 'final_year_project_reward: 50 - (((X * (reg_group1_mean + K * reg_group1_std) + Y * (reg_group1_mean + K * reg_group1_std))  + Z*(emg_mean + K*emg_std))',
@@ -164,8 +181,18 @@ class GetRewards(ObservationFunction):
         'ambulance_type_ids': ['ambulance_type', 'emergency'],
         # Scaling parameters - the first things you'll likely want to play
         # with. Both multiply the final reward AFTER it's combined below.
-        'ev_scale': 1.0,
+        'ev_scale': 5.0,
         'reg_scale': 1.0,
+
+        # ---- r1 EV metric switch ----
+        # Same three options and same tradeoffs as project1_std_reward's
+        # 'ev_metric_mode' (see REWARD_CONFIGS above) - r1 currently sums
+        # 'delay_window' (self.world.vehicle_timeloss_delta) across every EV
+        # in the sim each step: small-magnitude, resets every step, no
+        # persistence. 'delay_cumulative' (eng.vehicle.getTimeLoss) is the
+        # persistent version of the same delay concept; 'waiting_time'
+        # matches what the OLD/baseline aggregated reward used for EVs.
+        'ev_metric_mode': 'delay_window',
 
         # ---- r2 mode switch ----
         # 'pooled'      : all non-EV vehicles observed by this intersection
@@ -206,24 +233,39 @@ class GetRewards(ObservationFunction):
         cfg = self.LEXICOGRAPHIC_CONFIG
         ambulance_type_ids = cfg['ambulance_type_ids']
         eng = self.world.eng
-
-        delays = []
+        current_ev_ids = []
         try:
             for veh_id in eng.vehicle.getIDList():
                 try:
                     if eng.vehicle.getTypeID(veh_id) in ambulance_type_ids:
-                        delays.append(self.world.vehicle_timeloss_delta.get(veh_id, 0.0))
+                        current_ev_ids.append(veh_id)
                 except Exception:
                     continue
         except Exception:
             pass
 
+        # NEW: pick the per-vehicle EV metric according to ev_metric_mode,
+        # instead of always reading vehicle_timeloss_delta directly - see
+        # LEXICOGRAPHIC_CONFIG['ev_metric_mode'] for what each option means.
+        def _ev_metric(vid):
+            mode = cfg.get('ev_metric_mode', 'delay_window')
+            try:
+                if mode == 'waiting_time':
+                    return eng.vehicle.getAccumulatedWaitingTime(vid)
+                elif mode == 'delay_cumulative':
+                    return eng.vehicle.getTimeLoss(vid)
+                else:  # 'delay_window' - original behaviour
+                    return self.world.vehicle_timeloss_delta.get(vid, 0.0)
+            except Exception:
+                return 0.0
+
         # ---- COMBINE STEP: this is the line to edit for a different r1 formula ----
         # 0.0 (neutral, not a penalty) whenever there's no EV at all - this
         # is what keeps r1 well-behaved during EV-free stretches, see
         # _update_lexicographic_duals in MAPPOagent.py for how that's used.
-        combined = sum(delays) if delays else 0.0
-
+        combined = sum(_ev_metric(vid) for vid in current_ev_ids) if current_ev_ids else 0.0  # Original version
+        #combined = max((self.world.vehicle_timeloss_delta.get(vid, 0.0) for vid in current_ev_ids), default=0.0)  # alternate idea i tried - doesn't seem to be as good
+        
         return -float(combined) * cfg['ev_scale']
 
     def _lex_objective_regular_vehicles(self) -> float:
@@ -428,6 +470,14 @@ class GetRewards(ObservationFunction):
     def compute_reward(self) -> np.ndarray:
         """Compute reward with multiple algorithm-specific modes."""
         
+        # NEW FOR FYP: exploratory variant - delay (timeLoss-based) for BOTH
+        # regular and emergency vehicles, instead of only EVs. Checked before
+        # the 'project1'/'fyp' substring checks below since algorithm_name
+        # strings like 'project1_delay_all' or 'fyp_delay_all' would also
+        # match those broader checks.
+        if 'delay_all' in self.algorithm_name.lower():
+            return self._compute_project1_std_reward_delay_all()
+        
         # Project1 / std-DQN special case
         if 'project1' in self.algorithm_name.lower() or 'std_dqn' in self.algorithm_name.lower():
             return self._compute_project1_std_reward()
@@ -556,7 +606,7 @@ class GetRewards(ObservationFunction):
             return float(reward_components[0])
 
     # TODO: this one HAS to be right for which reward you want to use
-    def _compute_project1_std_reward(self) -> float:
+    def _compute_project1_std_reward_old(self) -> float:
         """
         Project 1 standard deviation-aware reward.
     
@@ -825,9 +875,209 @@ class GetRewards(ObservationFunction):
 # and when using new reward, I put _old at end of old/baseline code and remove _new from new code so new FYP Reward is used
 ##############################################################################
 
+    def _compute_project1_std_reward(self) -> float: # TODO: rename this to '_compute_project1_std_reward' when want to use it 
+            """
+            Project 1 standard deviation-aware reward.
+        
+            Reward formula (aligned with Project1 Agent.ipynb):
+                reward = 50 - ((reg_mean + K * reg_std) + Z * (ev_delay_mean + K * ev_delay_std))
+        
+            Where:
+                - reg_mean: mean waiting time of regular vehicles (getAccumulatedWaitingTime)
+                - reg_std: standard deviation of regular vehicle waiting time ⭐ core innovation
+                - ev_delay_mean: mean timeLoss-based delay of emergency vehicles (NEW FOR FYP -
+                  see vehicle loop below; this is NOT the same metric as reg_mean)
+                - ev_delay_std: standard deviation of emergency vehicle delay
+                - K: standard deviation weighting factor (default 0.5)
+                - Z: emergency vehicle penalty multiplier (default 1.0)
+        
+            Returns:
+                reward: float
+                    - approximately in range [-150, 50]
+                    - positive values indicate good traffic conditions
+                    - negative values indicate congestion
+            """
+            config = self.REWARD_CONFIGS['project1_std_reward']
+            K = config['K']
+            Z = config['Z']
+            base_reward = config['base_reward']
+            ambulance_type_ids = config['ambulance_type_ids']
+            # NEW: which per-vehicle EV metric to use - see the comment on
+            # 'ev_metric_mode' in REWARD_CONFIGS['project1_std_reward'] above
+            # for what each option means and why it matters.
+            ev_metric_mode = config.get('ev_metric_mode', 'delay_window')
+            
+            # ========== 1. collect waiting-time / delay distribution from all observed lanes ==========
+            regular_waiting_times = []  # regular vehicles - getAccumulatedWaitingTime
+            ev_delays = []  # emergency vehicles - metric depends on ev_metric_mode
+            
+            eng = self.world.eng
+            
+            # iterate over all observed lanes
+            for road_lanes in self.lanes_road_observed:
+                for lane_id in road_lanes:
+                    # lanes of concern -E15_1 and E81_1
+                    try:
+                        # get all vehicles on lane
+                        vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+                        for veh_id in vehicle_ids:
+                            try:
+                                # Determine vehicle type
+                                veh_type = eng.vehicle.getTypeID(veh_id)
+    
+                                if veh_type in ambulance_type_ids:
+                                    # Emergency vehicle - metric selectable via
+                                    # ev_metric_mode:
+                                    #   'waiting_time'     -> getAccumulatedWaitingTime
+                                    #                         (capped at 100s, only counts
+                                    #                         near-full stops - same metric
+                                    #                         the OLD/baseline reward used)
+                                    #   'delay_window'      -> World.vehicle_timeloss_delta,
+                                    #                         delay accrued THIS decision
+                                    #                         window only (small magnitude,
+                                    #                         resets every step)
+                                    #   'delay_cumulative'  -> eng.vehicle.getTimeLoss,
+                                    #                         SUMO's own running delay total
+                                    #                         for this vehicle since it
+                                    #                         entered the sim - persistent
+                                    #                         like waiting_time, but still
+                                    #                         counts any sub-max-speed driving
+                                    #                         rather than just full stops
+                                    if ev_metric_mode == 'waiting_time':
+                                        delay = eng.vehicle.getAccumulatedWaitingTime(veh_id)
+                                    elif ev_metric_mode == 'delay_cumulative':
+                                        delay = eng.vehicle.getTimeLoss(veh_id)
+                                    else:  # 'delay_window' - original behaviour
+                                        delay = self.world.vehicle_timeloss_delta.get(veh_id, 0.0)
+                                    ev_delays.append(delay)
+                                else:
+                                    # Regular vehicle - unchanged: accumulated waiting time
+                                    waiting_time = eng.vehicle.getAccumulatedWaitingTime(veh_id) # this caps at 100 s
+                                    regular_waiting_times.append(waiting_time)
+    
+                            except Exception as e:
+                                # Skip vehicles with failed data retrieval
+                                continue
+    
+                    except Exception as e:
+                        # Skip lanes with errors
+                        continue
+    
+            
+            # ========== 2. Compute statistics for regular vehicles (waiting time) ==========
+            if len(regular_waiting_times) > 0:
+                reg_mean = float(np.mean(regular_waiting_times))
+                reg_std = float(np.std(regular_waiting_times))
+            else:
+                # no regular vehicles, set to 0 (ideal state)
+                reg_mean = 0.0
+                reg_std = 0.0
+            
+            # ========== 3. Compute statistics for emergency vehicles (delay) ==========
+            if len(ev_delays) > 0:
+                ev_delay_mean = float(np.mean(ev_delays))
+                ev_delay_std = float(np.std(ev_delays))
+            else:
+                # No emergency vehicles
+                ev_delay_mean = 0.0
+                ev_delay_std = 0.0
+            
+            # ========== 4. Compute reward (fully aligned with formula) ==========
+            reward = base_reward - (
+                (reg_mean + K * reg_std) + 
+                Z * (ev_delay_mean + K * ev_delay_std)
+            )
+            
+            # ========== 5. Optional debugging info ==========
+            # Uncomment if debugging is needed
+            # if hasattr(self.world, '_debug_reward_stats'):
+            #     self.world._debug_reward_stats = {
+            #         'reg_mean': reg_mean,
+            #         'reg_std': reg_std,
+            #         'ev_delay_mean': ev_delay_mean,
+            #         'ev_delay_std': ev_delay_std,
+            #         'reward': reward,
+            #         'num_regular': len(regular_waiting_times),
+            #         'num_emergency': len(ev_delays)
+            #     }
+            
+            return float(reward)
 
-    # TODO: this one HAS to be right for which reward you want to use
-    def _compute_project1_std_reward_new(self) -> float: # TODO: rename this and fix all calls to this to reflect FYP better
+    def _compute_project1_std_reward_delay_all(self) -> float: # rename this one to '_compute_project1_std_reward' if which for it to be the reward function used
+        """
+        NEW FOR FYP - exploratory variant of _compute_project1_std_reward.
+
+        Identical std-aware formula, but BOTH regular and emergency vehicles
+        use timeLoss-based delay (World.vehicle_timeloss_delta, accrued THIS
+        decision window) instead of regular vehicles using
+        getAccumulatedWaitingTime(). Use this to compare against the
+        EV-only-delay version above. Select it by putting 'delay_all'
+        anywhere in algorithm_name (see compute_reward()), e.g.
+        'fyp_delay_all' or 'project1_delay_all'.
+
+        Reward formula (same as _compute_project1_std_reward):
+            reward = base_reward - ((reg_mean + K * reg_std) + Z * (emg_mean + K * emg_std))
+
+        Note on scale: getAccumulatedWaitingTime is a running "current wait
+        streak" capped at 100s, whereas vehicle_timeloss_delta is delay
+        accrued only within the current decision window. Switching regular
+        vehicles onto delay will likely shrink reg_mean/reg_std substantially
+        relative to the baseline version - expect to retune K/base_reward if
+        you compare runs.
+        """
+        config = self.REWARD_CONFIGS['project1_std_reward']
+        K = config['K']
+        Z = config['Z']
+        base_reward = config['base_reward']
+        ambulance_type_ids = config['ambulance_type_ids']
+
+        regular_delays = []    # regular vehicles
+        emergency_delays = []  # emergency vehicles
+
+        eng = self.world.eng
+
+        for road_lanes in self.lanes_road_observed:
+            for lane_id in road_lanes:
+                try:
+                    vehicle_ids = eng.lane.getLastStepVehicleIDs(lane_id)
+                    for veh_id in vehicle_ids:
+                        try:
+                            veh_type = eng.vehicle.getTypeID(veh_id)
+                            delay = self.world.vehicle_timeloss_delta.get(veh_id, 0.0)
+
+                            if veh_type in ambulance_type_ids:
+                                emergency_delays.append(delay)
+                            else:
+                                regular_delays.append(delay)
+
+                        except Exception as e:
+                            continue
+
+                except Exception as e:
+                    continue
+
+        if len(regular_delays) > 0:
+            reg_mean = float(np.mean(regular_delays))
+            reg_std = float(np.std(regular_delays))
+        else:
+            reg_mean = 0.0
+            reg_std = 0.0
+
+        if len(emergency_delays) > 0:
+            emg_mean = float(np.mean(emergency_delays))
+            emg_std = float(np.std(emergency_delays))
+        else:
+            emg_mean = 0.0
+            emg_std = 0.0
+
+        reward = base_reward - (
+            (reg_mean + K * reg_std) +
+            Z * (emg_mean + K * emg_std)
+        )
+
+        return float(reward)
+
+    def _compute_project1_std_reward_progress_report_ver(self) -> float: 
         """
         Final year project reward
         
