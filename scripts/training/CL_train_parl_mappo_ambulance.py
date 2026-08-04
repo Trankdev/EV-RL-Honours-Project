@@ -211,7 +211,7 @@ def create_sumo_config(scenario_dir, config_dir, gui=False): # Set gui=False for
 # Paths are relative to scenario_dir, matching flowFile above.
 
 # TODO: Fill this out with the demand files for the scenario - and set episode lengths for each segment of training
-CURRICULUM = [
+CURRICULUM_OLD = [
     # Stage 1: low regular demand, dense EVs - learn EV response mechanics
     # fast, without heavy background congestion complicating credit assignment.
     {
@@ -273,6 +273,22 @@ CURRICULUM = [
     },
 ]
 
+CURRICULUM = [
+    {
+        "last_episode": 200,
+        "regular_pool": [     
+            "demand_regular/reg_1800_v1.rou.xml",
+            "demand_regular/reg_1800_v2.rou.xml",
+            "demand_regular/reg_1800_v3.rou.xml",
+        ],
+        "ev_pool": [
+            "demand_ev/ev_100s_v1.rou.xml",
+            "demand_ev/ev_100s_v2.rou.xml",
+            "demand_ev/ev_100s_v3.rou.xml",
+        ],
+    },
+]
+
 
 def sample_episode_demand(episode: int, curriculum=CURRICULUM, rng=None):
     """
@@ -310,7 +326,7 @@ def main():
         description='Train MAPPO agent with project1-style EMV-aware obs+reward')
 
     # Config / scenario
-    parser.add_argument('--config', type=str, default='mappo_ambulance', # TODO: Use mappo_ambulance for BASELINE, mappo_fyp_config for FYP and mappo_fyp_lexicographic_config for lexicographic - from configs/tsc folder
+    parser.add_argument('--config', type=str, default='mappo_fyp_config', # TODO: Use mappo_ambulance for BASELINE, mappo_fyp_config for FYP and mappo_fyp_lexicographic_config for lexicographic - from configs/tsc folder
                         help='Config name in configs/tsc/ (baseline is: mappo_ambulance)')
     parser.add_argument('--scenario-dir', type=str,
                         default='scenarios/3_intersection_corridor_250long', # TODO: change this when switching to a new scenario/network
