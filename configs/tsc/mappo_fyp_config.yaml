@@ -52,7 +52,8 @@ algorithm:
   # Z are read by the training script and logged; the reward
   # function reads them from Rewards.REWARD_CONFIGS at runtime.
   ambulance:
-    Z: 3.0   # emergency-vehicle penalty multiplier
+    K: 0.5   # std-penalty weight
+    Z: 40   # emergency-vehicle penalty multiplier
 
 # ==================== Training Configuration ====================
 training:
