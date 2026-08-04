@@ -63,7 +63,6 @@ CROP_PERCENTILE = 99     # x-axis view is zoomed to this percentile of the
                           # are still counted in the histogram/KDE math, just
                           # not inside the visible window (noted on the plot)
 
-
 # ============================================================================
 # Group metadata: JSON key -> (display title, x-axis label)
 # ============================================================================
@@ -101,7 +100,7 @@ def load_run(label, path):
 # ============================================================================
 
 def plot_group(ax, baseline, variant, group_key,
-                max_bins=30, min_bins=15, show_mean_lines=True,
+                max_bins=30, min_bins=8, show_mean_lines=True,
                 crop_percentile=99):
     """Draw overlaid baseline vs. variant histogram + KDE curves for one
     delay group onto ax."""
@@ -197,6 +196,22 @@ def make_plots(baseline, variant, out_dir, max_bins=30, min_bins=8,
         plt.close(fig)
         saved.append(out_path)
         print(f"Saved: {out_path}")
+
+    # NEW: all 4 groups on one combined 2x2 figure - same 4 plots above, just
+    # also assembled into a single image for a report overview/summary slide.
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    for ax, group_key in zip(axes.flat, GROUPS):
+        plot_group(ax, baseline, variant, group_key, max_bins=max_bins,
+                   min_bins=min_bins, show_mean_lines=show_mean_lines,
+                   crop_percentile=crop_percentile)
+    fig.suptitle(f"{baseline['label']} vs. {variant['label']} - Vehicle Delay Distributions",
+                 fontsize=14)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    combined_path = os.path.join(out_dir, 'all_groups_delay_distribution.png')
+    fig.savefig(combined_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    saved.append(combined_path)
+    print(f"Saved: {combined_path}")
 
     return saved
 
