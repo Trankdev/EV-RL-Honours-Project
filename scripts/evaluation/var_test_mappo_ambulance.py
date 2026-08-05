@@ -340,7 +340,7 @@ def test_model(
     config_path,
     scenario_dir,
     Z=None,
-    num_episodes=10,
+    num_episodes=1,
     deterministic=True,
     seed=42,
     gui=False,
@@ -801,7 +801,7 @@ Examples:
     parser.add_argument('--Z', type=float, default=None,
                         help='EMV penalty multiplier Z (auto-detected from exp_config.json if omitted)')
 
-    parser.add_argument('--num-episodes', type=int, default=5,
+    parser.add_argument('--num-episodes', type=int, default=1,
                         help='Number of test episodes (default: 5)')
     parser.add_argument('--regular-pool', type=str, nargs='+', default=None,
                         help='Regular-traffic demand files to sample from, one per episode '
