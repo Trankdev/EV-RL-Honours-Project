@@ -26,6 +26,11 @@ Sections, in print order:
      comparison is biased toward whichever group had more chances to draw
      a lucky low value. This equalizes the number of draws before
      comparing, giving a fairer "expected best" per feature count.
+  3b. Z-SENSITIVITY SWEEP - recomputes composite_cost (K held fixed, the
+     value actually used) across a range of Z values, purely from columns
+     already in the dataset - no retraining needed. Answers "did I only
+     get this winner because I picked Z=35?" by showing whether the
+     winning combo_id is stable across the sweep or changes with Z.
   4. LEAVE-ONE-OUT (LOO) ABLATION TABLE - uses the num_features_on == 9
      group directly: each of those 10 combos is the full 10-feature model
      with exactly one feature removed, which IS the standard ablation-table
@@ -55,16 +60,28 @@ Sections, in print order:
      before computing dominance, so a policy that's essentially ignoring
      EVs to win on regular-traffic delay can't appear as a "Pareto-optimal"
      candidate.
-  9. STAGE-3 RERUN SHORTLIST - combines sections 2-8b into a concrete,
+  8c. STD-DEV DECOMPOSITION - composite_cost = composite_mean_term +
+     composite_std_term, split out explicitly. This is why a combo can be
+     beaten on BOTH raw means by another combo (see section 8) yet still
+     win on composite_cost: it collapses to worse means but tighter stds,
+     and the std terms are part of the objective too. Also auto-detects
+     and prints any such mean-vs-composite reordering among the top 20.
+  9. STAGE-3 RERUN SHORTLIST - combines sections 2-8c into a concrete,
      small list of candidates (not hundreds) worth re-training at a larger
      episode budget and multiple seeds, to resolve the two confounds this
      script cannot resolve on its own (see CAVEATS at the end).
-  10. GRAPHS - saved as PNGs next to the input CSV (see PLOTS_DIRNAME
+  10. BASELINE COMPARISON - if a baseline results file is found next to
+     the input CSV (see BASELINE_FILENAME below), loads it and reports
+     %-change in ev_delay_mean/all_reg_delay_mean for the composite-best
+     combo, the Pareto frontier, and the constrained frontier, relative to
+     baseline. Answers "compared to what?" - skipped gracefully (with
+     instructions) if the file isn't present.
+  11. GRAPHS - saved as PNGs next to the input CSV (see PLOTS_DIRNAME
      below), and also shown via plt.show() when run somewhere interactive
      (e.g. Spyder's Plots pane): feature count vs composite_cost,
      ev_delay vs reg_delay for all combos, ev_delay vs reg_delay for the
-     Pareto frontier only, feature-importance bar chart, and the LOO
-     ablation bar chart.
+     Pareto frontier only, feature-importance bar chart, the LOO
+     ablation bar chart, and (if available) a baseline-comparison chart.
 
 CAVEATS (also printed at the end, read them):
   - Every combo was trained with the SAME base seed (seed=42 ->
@@ -83,7 +100,14 @@ CAVEATS (also printed at the end, read them):
     200 episodes", not each feature set's true ceiling. A combo that looks
     worse here might just be under-converged, not genuinely inferior.
   - composite_cost collapses two objectives via a single tuned Z - see the
-    Pareto-frontier sections for a Z-independent robustness check.
+    Pareto-frontier sections for a Z-independent robustness check, and
+    section 3b for whether the winning combo is stable across a range of Z.
+  - If a baseline file is present (section 10), it was trained under a
+    DIFFERENT reward/feature set than every combo in this grid. Composite
+    metrics are recomputed on the baseline's raw outcomes purely as a
+    common outcome-level yardstick - this is a fair "how much better did
+    we do" comparison, but it is NOT comparing what each model was
+    actually optimizing for during training.
 """
 
 import sys
@@ -127,6 +151,9 @@ SHORTLIST_GROUPS = [5, 6, 7, 8, 9, 10]
 INTERACTION_TOP_N = 15      # how many pairwise interaction terms to print
 CONSTRAINED_EV_DELAY_THRESHOLD = 15.0   # seconds - "degenerate" cutoff for section 8b
 PLOTS_DIRNAME = 'ablation_analysis_plots'
+Z_SWEEP_VALUES = [5, 10, 15, 20, 25, 35, 50, 75, 100]   # section 3b; actual Z is added automatically if missing
+STD_DECOMPOSITION_TOP_N = 20   # how many top-by-composite_cost combos to show in section 8c
+BASELINE_FILENAME = 'baselinefeatures_baselinereward.csv'   # looked for next to the input CSV; section 10
 
 # Short codes used for the 'features_on' column in tables - full feature
 # names would blow tables out to 150+ chars/row (see FEATURE_LEGEND, printed
@@ -178,13 +205,22 @@ def compact_for_display(df_subset):
 
 def add_computed_columns(df):
     """
-    Adds two columns used throughout the rest of the script, computed once
-    up front so later sections don't redo the O(n^2) Pareto-dominance pass
-    or the decode:
-      - 'features_on'        human-readable ON-feature list (see section 1/8/8b/9)
-      - 'on_pareto_frontier' bool, True if not simultaneously beaten on both
-                              ev_delay_mean AND all_reg_delay_mean by any
-                              other combo in the full grid (see section 8)
+    Adds columns used throughout the rest of the script, computed once up
+    front so later sections don't redo the O(n^2) Pareto-dominance pass or
+    the decode:
+      - 'features_on'          human-readable ON-feature list (sections 1/8/8b/8c/9)
+      - 'on_pareto_frontier'   bool, True if not simultaneously beaten on both
+                                ev_delay_mean AND all_reg_delay_mean by any
+                                other combo in the full grid (section 8)
+      - 'composite_mean_term'  the part of composite_cost driven by the two
+                                MEANS: all_reg_delay_mean + Z*ev_delay_mean
+      - 'composite_std_term'   the part driven by the two STDs:
+                                K*(all_reg_delay_std + Z*ev_delay_std)
+      - 'composite_std_term_%'  composite_std_term as a % of composite_cost
+    composite_mean_term + composite_std_term == composite_cost exactly (it's
+    just the same formula regrouped) - see section 8c for why this split
+    matters: it's what lets a combo lose on both raw means (section 8) yet
+    still win on composite_cost, if its stds are tight enough.
     """
     df['features_on'] = df.apply(decode_features_on, axis=1)
 
@@ -199,6 +235,12 @@ def add_computed_columns(df):
         if dominated_by_other.any():
             is_dominated[i] = True
     df['on_pareto_frontier'] = ~is_dominated
+
+    K = df['k_value']
+    Z = df['z_value']
+    df['composite_mean_term'] = df['all_reg_delay_mean'] + Z * df['ev_delay_mean']
+    df['composite_std_term'] = K * (df['all_reg_delay_std'] + Z * df['ev_delay_std'])
+    df['composite_std_term_%'] = 100.0 * df['composite_std_term'] / df['composite_cost']
     return df
 
 
@@ -255,6 +297,41 @@ def load(path):
     print(f"\nLoaded {n_have}/{n_expected} combos "
           f"({'FULL' if n_have == n_expected else 'PARTIAL'} 2^{len(FEATURES)} factorial design).")
     return df
+
+
+def load_baseline(csv_path):
+    """
+    Looks for BASELINE_FILENAME next to the main results CSV. Returns
+    (baseline_row, baseline_path) - baseline_row is None if the file isn't
+    found or can't be read, so callers can skip section 10 gracefully.
+
+    NOTE: the shipped baseline file is actually an Excel workbook saved
+    with a .csv extension (openpyxl-readable, not comma-separated text) -
+    read_excel is tried first, falling back to read_csv for a genuinely
+    plain-text baseline file if someone provides one later.
+    """
+    baseline_path = os.path.join(os.path.dirname(os.path.abspath(csv_path)), BASELINE_FILENAME)
+    if not os.path.exists(baseline_path):
+        return None, baseline_path
+
+    b = None
+    try:
+        b = pd.read_excel(baseline_path)
+    except Exception:
+        try:
+            b = pd.read_csv(baseline_path)
+        except Exception as e:
+            print(f"⚠️  Found a baseline file at {baseline_path} but could not "
+                  f"read it (tried Excel and CSV): {e}")
+            return None, baseline_path
+
+    if len(b) == 0:
+        print(f"⚠️  Baseline file at {baseline_path} has no rows - skipping.")
+        return None, baseline_path
+    if len(b) > 1:
+        print(f"⚠️  Baseline file at {baseline_path} has {len(b)} rows - "
+              f"using the first row only.")
+    return b.iloc[0], baseline_path
 
 
 def top_n_overall(df, n=TOP_N):
@@ -317,6 +394,56 @@ def bootstrapped_best_of_k(df, k=BOOTSTRAP_K, reps=BOOTSTRAP_REPS, seed=0):
     print("(both columns are composite_cost values, in composite_cost units)\n")
     print(out.to_string(index=False, float_format=lambda x: f"{x:.1f}",
                          na_rep='n/a (too few combos to resample)'))
+
+
+def z_sensitivity_sweep(df, z_values=Z_SWEEP_VALUES):
+    """
+    3b. For each Z in z_values (K held fixed at the value actually used),
+    recompute composite_cost for every combo and report the winner. This
+    is a pure recomputation from columns already in the dataset - no
+    retraining needed - and it directly answers "did I only get this
+    winner because I picked Z=35?"
+    """
+    print("\n" + "=" * 70)
+    print("3b. Z-SENSITIVITY SWEEP (K held fixed, Z varied)")
+    print("=" * 70)
+
+    K = df['k_value'].iloc[0]
+    actual_z = df['z_value'].iloc[0]
+    z_list = sorted(set(z_values) | {actual_z})
+    print(f"K fixed at {K}. Sweeping Z over {z_list} "
+          f"(actual Z used to generate this dataset: {actual_z}).\n")
+
+    rows = []
+    for z in z_list:
+        cost = (df['all_reg_delay_mean'] + K * df['all_reg_delay_std']) \
+            + z * (df['ev_delay_mean'] + K * df['ev_delay_std'])
+        idx = cost.idxmin()
+        row = df.loc[idx]
+        rows.append((z, row['combo_id'], row['features_on'], row['num_features_on'],
+                      row['ev_delay_mean'], row['all_reg_delay_mean'], cost[idx]))
+    out = pd.DataFrame(rows, columns=['Z', 'combo_id', 'features_on', 'num_features_on',
+                                       'ev_delay_mean', 'all_reg_delay_mean',
+                                       'composite_cost_at_this_Z'])
+    # Flag the actual-Z row via its own short column instead of appending text
+    # onto combo_id - that used to blow that one column out to 2-3x the width
+    # of every other row and wreck the table's alignment.
+    out['note'] = ''
+    out.loc[out['Z'] == actual_z, 'note'] = '<- actual Z'
+    disp = compact_for_display(out)
+    print(disp.to_string(index=False, float_format=lambda x: f"{x:.2f}"))
+
+    n_unique = out['combo_id'].nunique()
+    print(f"\n{n_unique} distinct winning combo(s) across {len(z_list)} Z values tested.")
+    if n_unique == 1:
+        print("✅ ROBUST: the same combo wins across the entire sweep - your "
+              "conclusion does not depend on the exact Z chosen.")
+    else:
+        print("⚠️  The winning combo CHANGES with Z - your choice of Z materially "
+              "affects which feature set looks best. Make sure Z is justified from "
+              "your project's actual requirements (e.g. an acceptable EV delay "
+              "target), not just the value that happened to be swept to first.")
+    return out
 
 
 def leave_one_out_table(df):
@@ -507,20 +634,29 @@ def pareto_frontier(df):
     print("=" * 70)
     n = len(df)
     frontier = df.loc[df['on_pareto_frontier']].sort_values('ev_delay_mean')
-    print(f"{len(frontier)} of {n} combos are Pareto-optimal. Pareto-optimal refers to 'not beaten on both axes simultaneously.'\n")
-    print("This is useful for seeing the trade-offs and how further decreases in delay of one group results in substantial delay increases for the other group.\n")
+    print(f"{len(frontier)} of {n} combos are Pareto-optimal. Pareto-optimal refers to "
+          "'not beaten on both MEAN axes simultaneously' - this frontier uses "
+          "ev_delay_mean and all_reg_delay_mean ONLY, not composite_cost (which "
+          "also includes std terms - see section 8c).\n")
+    print("This is useful for seeing the trade-offs and how further decreases in MEAN delay of one group results in substantial MEAN delay increases for the other group.\n")
     cols = ['combo_id', 'features_on', 'num_features_on', 'ev_delay_mean',
             'all_reg_delay_mean', 'composite_cost']
-    print(frontier[cols].to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    disp = compact_for_display(frontier[cols])
+    print(disp.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 
     best_composite_id = df.loc[df['composite_cost'].idxmin(), 'combo_id']
     on_frontier = best_composite_id in frontier['combo_id'].values
     print(f"\nComposite-cost-best combo ({best_composite_id}) is "
           f"{'ON' if on_frontier else 'NOT ON'} the Pareto frontier.")
     if not on_frontier:
-        print("⚠️  This means some other combo beats it on BOTH objectives "
-              "simultaneously - worth double-checking Z is well-tuned, or "
-              "just note the composite-best still involves this tradeoff.")
+        print("⚠️  This means some other combo beats it on BOTH MEANS "
+              "simultaneously (ev_delay_mean AND all_reg_delay_mean) - it does "
+              "NOT mean some other combo beats it on the full composite_cost "
+              "objective, since composite_cost also includes std terms that "
+              "this mean-only frontier ignores. A combo can lose on both means "
+              "here and still legitimately win on composite_cost if its stds "
+              "are tight enough - see section 8c for exactly how much of each "
+              "combo's score comes from mean vs. std, and a worked example.")
     return frontier
 
 
@@ -559,7 +695,8 @@ def constrained_pareto_frontier(df, frontier, ev_threshold=CONSTRAINED_EV_DELAY_
           f"Pareto-optimal within this constrained set.\n")
     cols = ['combo_id', 'features_on', 'num_features_on', 'ev_delay_mean',
             'all_reg_delay_mean', 'composite_cost']
-    print(constrained[cols].to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    disp = compact_for_display(constrained[cols])
+    print(disp.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 
     dropped = frontier[frontier['ev_delay_mean'] > ev_threshold]
     if len(dropped):
@@ -572,6 +709,66 @@ def constrained_pareto_frontier(df, frontier, ev_threshold=CONSTRAINED_EV_DELAY_
               "frontiers agree on membership at this threshold.")
 
     return constrained
+
+
+def std_decomposition(df, n=STD_DECOMPOSITION_TOP_N):
+    """
+    8c. composite_cost = composite_mean_term + composite_std_term (an exact
+    regrouping of the same formula, not an approximation). Shows both terms
+    for the top-N combos by composite_cost, then auto-detects and prints
+    any case where a combo with WORSE means than another combo still WINS
+    on composite_cost - i.e. exactly the situation flagged as a caveat at
+    the end of section 8, made concrete with real rows from this dataset.
+    """
+    print("\n" + "=" * 70)
+    print("8c. STD-DEV DECOMPOSITION: composite_cost = mean_term + std_term")
+    print("=" * 70)
+    print("composite_mean_term = all_reg_delay_mean + Z*ev_delay_mean")
+    print("composite_std_term  = K*(all_reg_delay_std + Z*ev_delay_std)")
+    print("(these two add up EXACTLY to composite_cost - it's the same "
+          "formula regrouped, not an approximation)\n")
+
+    top = df.sort_values('composite_cost').head(n).copy()
+    cols = ['combo_id', 'features_on', 'composite_cost',
+            'composite_mean_term', 'composite_std_term', 'composite_std_term_%']
+    print(top[cols].to_string(index=False, float_format=lambda x: f"{x:.2f}"))
+    print(f"\ncomposite_std_term_% = what % of composite_cost comes from "
+          f"variability rather than the raw means, for each of the top {n}.")
+
+    # Auto-detect mean-vs-composite reordering: any pair, both in the top N,
+    # where combo X has a WORSE mean_term than combo Y but a BETTER (lower)
+    # composite_cost - i.e. X's tighter std pulled it ahead despite worse means.
+    top_sorted_by_mean = top.sort_values('composite_mean_term').reset_index(drop=True)
+    print(f"\nSame top {n}, re-ranked by composite_mean_term ALONE (ignoring std):")
+    print(top_sorted_by_mean[['combo_id', 'features_on', 'composite_mean_term',
+                               'composite_cost']].to_string(
+        index=False, float_format=lambda x: f"{x:.2f}"))
+
+    examples = []
+    top_records = top.to_dict('records')
+    for a in top_records:
+        for b in top_records:
+            if a['combo_id'] == b['combo_id']:
+                continue
+            # a has worse (higher) mean_term than b, but better (lower) composite_cost
+            if a['composite_mean_term'] > b['composite_mean_term'] and \
+               a['composite_cost'] < b['composite_cost']:
+                examples.append((a['combo_id'], b['combo_id'],
+                                  a['composite_mean_term'] - b['composite_mean_term'],
+                                  b['composite_cost'] - a['composite_cost']))
+    if examples:
+        examples.sort(key=lambda r: -r[3])
+        worst = examples[0]
+        print(f"\n⚠️  WORKED EXAMPLE - mean-vs-composite reordering found in the "
+              f"top {n}:")
+        print(f"  {worst[0]} has a WORSE composite_mean_term than {worst[1]} "
+              f"(by {worst[2]:+.2f}), yet WINS on composite_cost overall "
+              f"(by {worst[3]:.2f}) - purely because its std terms are tighter. "
+              f"This is exactly why section 8's Pareto frontier (means only) "
+              f"and the composite_cost ranking can disagree.")
+    else:
+        print(f"\nNo mean-vs-composite reordering found within the top {n} - "
+              f"the composite_cost ranking agrees with a mean-only ranking here.")
 
 
 def stage3_shortlist(df, frontier):
@@ -610,14 +807,92 @@ def stage3_shortlist(df, frontier):
           f"vs. re-running all {len(df)}.")
 
 
-def make_plots(df, frontier, constrained_frontier, coefs, loo_df, csv_path):
+def baseline_comparison(df, baseline_row, baseline_path, frontier, constrained_frontier):
+    """
+    10. If a baseline row was found, reports %-change in ev_delay_mean and
+    all_reg_delay_mean for the composite-best combo, the full Pareto
+    frontier, and the constrained frontier, relative to baseline.
+
+    IMPORTANT: the baseline was trained under a DIFFERENT reward/feature
+    set (see BASELINE_FILENAME docstring in load_baseline()). composite_cost
+    is recomputed on the baseline's raw outcomes using the SAME (K, Z) as
+    this grid purely as a common outcome-level yardstick for reporting -
+    this is a fair "how much better did we do" comparison, but it is NOT
+    comparing what each model was actually optimizing for during training.
+    """
+    print("\n" + "=" * 70)
+    print("10. BASELINE COMPARISON")
+    print("=" * 70)
+    if baseline_row is None:
+        print(f"No baseline file found at:\n  {baseline_path}\n")
+        print(f"To enable this section, add a file named '{BASELINE_FILENAME}' "
+              f"in the same folder as the input CSV, with (at minimum) columns: "
+              f"ev_delay_mean, ev_delay_std, all_reg_delay_mean, all_reg_delay_std.")
+        return
+
+    print(f"Baseline file: {baseline_path}\n")
+    print("⚠️  This baseline was trained under a DIFFERENT reward/feature set "
+          "than every combo in this grid. The comparison below is an "
+          "outcome-level comparison (same yardstick, different objectives "
+          "during training) - it answers 'how much better are the actual "
+          "results', not 'was the same thing being optimized'.\n")
+
+    K = df['k_value'].iloc[0]
+    Z = df['z_value'].iloc[0]
+    b_ev_mean = baseline_row['ev_delay_mean']
+    b_ev_std = baseline_row['ev_delay_std']
+    b_reg_mean = baseline_row['all_reg_delay_mean']
+    b_reg_std = baseline_row['all_reg_delay_std']
+    b_composite = (b_reg_mean + K * b_reg_std) + Z * (b_ev_mean + K * b_ev_std)
+
+    print("Baseline raw outcomes:")
+    print(f"  ev_delay_mean={b_ev_mean:.3f}  ev_delay_std={b_ev_std:.3f}")
+    print(f"  all_reg_delay_mean={b_reg_mean:.3f}  all_reg_delay_std={b_reg_std:.3f}")
+    print(f"  composite_cost (recomputed at K={K}, Z={Z}) = {b_composite:.2f}\n")
+
+    def pct_improvement(new, old):
+        """Positive = improvement (lower delay) vs. baseline, negative = worse.
+        This is just -1 * the usual %-change formula, flipped so 'better' always
+        reads as a positive number (this is a delay metric, so lower=better,
+        which makes the plain %-change sign backwards from what you'd expect)."""
+        return 100.0 * (old - new) / old if old != 0 else float('nan')
+
+    def compare_block(title, sub_df):
+        rows = []
+        for _, row in sub_df.iterrows():
+            rows.append((
+                row['combo_id'], row['features_on'], row['num_features_on'],
+                row['ev_delay_mean'], pct_improvement(row['ev_delay_mean'], b_ev_mean),
+                row['all_reg_delay_mean'], pct_improvement(row['all_reg_delay_mean'], b_reg_mean),
+                row['composite_cost'],
+            ))
+        out = pd.DataFrame(rows, columns=[
+            'combo_id', 'features_on', 'num_features_on',
+            'ev_delay_mean', 'ev_%_improve',
+            'all_reg_delay_mean', 'reg_%_improve', 'composite_cost'])
+        disp = compact_for_display(out)
+        print(f"\n{title}")
+        print("(*_%_improve: positive = improvement/lower delay than "
+              "baseline, negative = worse/higher delay than baseline)\n")
+        print(disp.to_string(index=False, float_format=lambda x: f"{x:.2f}"))
+
+    best = df.loc[[df['composite_cost'].idxmin()]]
+    compare_block("Composite-cost-best combo vs. baseline:", best)
+    compare_block("Full Pareto frontier vs. baseline:", frontier.sort_values('ev_delay_mean'))
+    compare_block(f"Constrained Pareto frontier (ev_delay_mean <= "
+                  f"{CONSTRAINED_EV_DELAY_THRESHOLD:.0f}s) vs. baseline:",
+                  constrained_frontier.sort_values('ev_delay_mean'))
+
+
+def make_plots(df, frontier, constrained_frontier, coefs, loo_df, csv_path,
+                baseline_row=None):
     """
     Saves PNGs to <folder containing the CSV>/PLOTS_DIRNAME/, and also
     calls plt.show() so they appear in an interactive session (e.g.
     Spyder's Plots pane). Silently no-ops if matplotlib isn't installed.
     """
     print("\n" + "=" * 70)
-    print("10. GRAPHS")
+    print("11. GRAPHS")
     print("=" * 70)
     if not HAVE_MPL:
         print("⚠️  matplotlib not installed - skipping graphs "
@@ -627,6 +902,18 @@ def make_plots(df, frontier, constrained_frontier, coefs, loo_df, csv_path):
     out_dir = os.path.join(os.path.dirname(os.path.abspath(csv_path)), PLOTS_DIRNAME)
     os.makedirs(out_dir, exist_ok=True)
     saved = []
+
+    # Baseline outcomes, recomputed to this grid's own composite_cost formula
+    # (K, Z) purely so it can be overlaid on the same axes as everything else -
+    # same caveat as section 10: different training objective, same yardstick.
+    b_ev_mean = b_reg_mean = b_composite = None
+    if baseline_row is not None:
+        K = df['k_value'].iloc[0]
+        Z = df['z_value'].iloc[0]
+        b_ev_mean = baseline_row['ev_delay_mean']
+        b_reg_mean = baseline_row['all_reg_delay_mean']
+        b_composite = ((b_reg_mean + K * baseline_row['all_reg_delay_std'])
+                        + Z * (b_ev_mean + K * baseline_row['ev_delay_std']))
 
     def _save(fig, name):
         path = os.path.join(out_dir, name)
@@ -664,6 +951,17 @@ def make_plots(df, frontier, constrained_frontier, coefs, loo_df, csv_path):
         Line2D([0], [0], marker='o', color='w', markerfacecolor='none',
                markeredgecolor=box_color, markersize=6, label='Outliers'),
     ]
+    if b_composite is not None:
+        # A horizontal line rather than a per-feature-count marker, since the
+        # baseline wasn't trained with any specific feature combo from this
+        # grid (different reward/feature set entirely - see section 10) so it
+        # has no real "feature count" to anchor a single box to. Navy dash-dot
+        # so it doesn't visually blend with the black-dashed whiskers.
+        ax.axhline(b_composite, color='navy', linestyle='-.', linewidth=2, zorder=3)
+        legend_handles.append(
+            Line2D([0], [0], color='navy', linestyle='-.', linewidth=2,
+                   label=f'Baseline composite_cost ({b_composite:.1f})')
+        )
     ax.legend(handles=legend_handles, loc='upper right', fontsize=8)
     _save(fig, 'feature_count_vs_composite_cost.png')
 
@@ -674,11 +972,36 @@ def make_plots(df, frontier, constrained_frontier, coefs, loo_df, csv_path):
                s=10, alpha=0.25, color='gray', label='Dominated')
     ax.scatter(frontier['ev_delay_mean'], frontier['all_reg_delay_mean'],
                s=35, color='crimson', label='Pareto-optimal (full frontier)')
+    if b_ev_mean is not None:
+        ax.scatter([b_ev_mean], [b_reg_mean], marker='*', s=400, color='gold',
+                   edgecolor='black', linewidths=1.5, zorder=5, label='Baseline')
     ax.set_xlabel('EV delay mean (s)')
     ax.set_ylabel('All regular-vehicle delay mean (s)')
     ax.set_title('EV delay vs. regular-vehicle delay - all combos')
     ax.legend()
     _save(fig, 'ev_vs_reg_delay_all_combos.png')
+    
+    # --- 2.1 EV delay vs reg delay, all combos ZOOMED --------------------------------
+    fig, ax = plt.subplots(figsize=(8, 7))
+    non_frontier = df.loc[~df['on_pareto_frontier']]
+    ax.scatter(non_frontier['ev_delay_mean'], non_frontier['all_reg_delay_mean'],
+               s=10, alpha=0.25, color='gray', label='Dominated')
+    ax.scatter(frontier['ev_delay_mean'], frontier['all_reg_delay_mean'],
+               s=35, color='crimson', label='Pareto-optimal (full frontier)')
+    if b_ev_mean is not None:
+        ax.scatter([b_ev_mean], [b_reg_mean], marker='*', s=400, color='gold',
+                   edgecolor='black', linewidths=1.5, zorder=5, label='Baseline')
+    ax.set_xlabel('EV delay mean (s)')
+    ax.set_ylabel('All regular-vehicle delay mean (s)')
+    ax.set_title('EV delay vs. regular-vehicle delay - all combos')
+    ax.legend()
+    
+    # Make sure (0, 0) is visible
+    ax.set_xlim(0, 50)
+    ax.set_ylim(0, 50)
+    
+    _save(fig, 'ev_vs_reg_delay_all_combos_zoomed.png')
+
 
     # --- 3. EV delay vs reg delay, Pareto frontier only ----------------------
     fig, ax = plt.subplots(figsize=(8, 7))
@@ -750,6 +1073,23 @@ def make_plots(df, frontier, constrained_frontier, coefs, loo_df, csv_path):
         ax.set_title('Leave-one-out ablation\n(red = feature is helpful, green = removing it improved the score)')
         _save(fig, 'loo_ablation.png')
 
+    # --- 6. Baseline comparison (only if a baseline row was found) ----------
+    if baseline_row is not None:
+        best = df.loc[df['composite_cost'].idxmin()]
+        labels = ['baseline', 'composite-best']
+        ev_vals = [baseline_row['ev_delay_mean'], best['ev_delay_mean']]
+        reg_vals = [baseline_row['all_reg_delay_mean'], best['all_reg_delay_mean']]
+
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+        axes[0].bar(labels, ev_vals, color=['gray', 'seagreen'])
+        axes[0].set_ylabel('ev_delay_mean (s)')
+        axes[0].set_title('EV delay: baseline vs. composite-best')
+        axes[1].bar(labels, reg_vals, color=['gray', 'seagreen'])
+        axes[1].set_ylabel('all_reg_delay_mean (s)')
+        axes[1].set_title('Regular-vehicle delay: baseline vs. composite-best')
+        fig.suptitle(f"vs. baseline (composite-best = {best['features_on']})")
+        _save(fig, 'baseline_comparison.png')
+
     print(f"Saved {len(saved)} plot(s) to: {out_dir}")
     for p in saved:
         print(f"  - {os.path.basename(p)}")
@@ -758,11 +1098,13 @@ def make_plots(df, frontier, constrained_frontier, coefs, loo_df, csv_path):
 def main(path):
     df = load(path)
     add_computed_columns(df)
+    baseline_row, baseline_path = load_baseline(path)
     print_formula_banner(df)
     print_feature_legend()
     top_n_overall(df)
     per_feature_count_summary(df)
     bootstrapped_best_of_k(df)
+    z_sensitivity_sweep(df)
     loo_df = leave_one_out_table(df)
     feature_importance(df)
     coefs = linear_regression_check(df)
@@ -770,8 +1112,10 @@ def main(path):
     enrichment_analysis(df)
     frontier = pareto_frontier(df)
     constrained_frontier = constrained_pareto_frontier(df, frontier)
+    std_decomposition(df)
     stage3_shortlist(df, frontier)
-    make_plots(df, frontier, constrained_frontier, coefs, loo_df, path)
+    baseline_comparison(df, baseline_row, baseline_path, frontier, constrained_frontier)
+    make_plots(df, frontier, constrained_frontier, coefs, loo_df, path, baseline_row)
 
     print("\n" + "=" * 70)
     print("CAVEATS")
@@ -801,9 +1145,21 @@ def main(path):
           "comparisons are biased toward large groups; use sections 2-3 "
           "instead of picking on raw minimums alone.")
     print()
-    print("→  See section 9 for a concrete, small shortlist to re-run at a "
-          "larger budget and multiple seeds (e.g. 42, 123, 7) before "
-          "trusting any specific combo's final rank.")
+    print("⚠️  Z SENSITIVITY: composite_cost depends on the chosen Z. See "
+          "section 3b - if the winning combo changes across the Z sweep, "
+          "your final choice of Z needs to be justified from an actual "
+          "project requirement (e.g. a maximum acceptable EV delay), not "
+          "just asserted.")
+    print()
+    print("⚠️  BASELINE COMPARISON (if section 10 ran): the baseline was "
+          "trained under a DIFFERENT reward/feature set than this grid. "
+          "Treat any %-change figures as an outcome-level comparison, not "
+          "evidence about which training objective is better.")
+    print()
+    print("→  See section 8c for why composite_cost and the mean-only Pareto "
+          "frontier (section 8) can disagree, and section 9 for a concrete, "
+          "small shortlist to re-run at a larger budget and multiple seeds "
+          "(e.g. 42, 123, 7) before trusting any specific combo's final rank.")
     print("=" * 70)
 
 
