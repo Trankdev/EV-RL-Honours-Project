@@ -12,7 +12,12 @@ Sections, in print order:
   0. COMPOSITE COST FORMULA - the exact formula + (K, Z) actually used,
      printed first so every table below is read against the right
      definition of "best".
-  1. TOP N OVERALL - raw sort by composite_cost, for a quick look.
+  1. TOP N OVERALL - raw sort by composite_cost. Includes a compact
+     'features_on' decode column (short codes - see the legend printed
+     right after the formula banner, e.g. WM+WS+EIL) and an
+     'on_pareto_frontier' flag (see 8) next to every combo_id, so you're
+     never hand-decoding bits or cross-referencing section 8 to know if a
+     top row is a real Pareto-optimal candidate or just Z-favoured.
   2. PER-FEATURE-COUNT SUMMARY - mean/median/std/min per num_features_on,
      NOT just the raw min - see the group-size-bias note below.
   3. BOOTSTRAPPED "BEST OF K DRAWS" PER FEATURE COUNT - corrects for the
@@ -31,6 +36,11 @@ Sections, in print order:
      group-size bias in section 2/3 since it marginalizes over everything.
   6. LINEAR REGRESSION CHECK - composite_cost ~ feature bits, a second,
      interaction-free importance ranking to sanity-check section 5 against.
+  6b. PAIRWISE INTERACTION REGRESSION - composite_cost ~ feature bits +
+     all 45 pairwise products. 1023 rows vs 55 terms (10 main + 45
+     pairwise) is well-determined, so this formally tests interactions
+     (e.g. phase_onehot/ev_in_lane_indicator redundancy) with an actual
+     coefficient instead of inferring it by eyeballing sections 4/5/7.
   7. ENRICHMENT ANALYSIS - for the top-N combos (by composite_cost), is
      each feature ON more/less often than its ~50% base rate would predict
      by chance? Includes a binomial-test p-value. This is a more principled
@@ -40,10 +50,21 @@ Sections, in print order:
      Pareto-optimal (not beaten on BOTH objectives simultaneously by any
      other combo) are defensible regardless of the exact Z chosen, which
      hedges against Z being imperfectly tuned.
-  9. STAGE-3 RERUN SHORTLIST - combines sections 2-8 into a concrete,
+  8b. CONSTRAINED / PRACTICAL PARETO FRONTIER - the same idea as 8, but
+     first excludes combos with degenerate EV delay (default: > 15s)
+     before computing dominance, so a policy that's essentially ignoring
+     EVs to win on regular-traffic delay can't appear as a "Pareto-optimal"
+     candidate.
+  9. STAGE-3 RERUN SHORTLIST - combines sections 2-8b into a concrete,
      small list of candidates (not hundreds) worth re-training at a larger
      episode budget and multiple seeds, to resolve the two confounds this
      script cannot resolve on its own (see CAVEATS at the end).
+  10. GRAPHS - saved as PNGs next to the input CSV (see PLOTS_DIRNAME
+     below), and also shown via plt.show() when run somewhere interactive
+     (e.g. Spyder's Plots pane): feature count vs composite_cost,
+     ev_delay vs reg_delay for all combos, ev_delay vs reg_delay for the
+     Pareto frontier only, feature-importance bar chart, and the LOO
+     ablation bar chart.
 
 CAVEATS (also printed at the end, read them):
   - Every combo was trained with the SAME base seed (seed=42 ->
@@ -62,14 +83,21 @@ CAVEATS (also printed at the end, read them):
     200 episodes", not each feature set's true ceiling. A combo that looks
     worse here might just be under-converged, not genuinely inferior.
   - composite_cost collapses two objectives via a single tuned Z - see the
-    Pareto-frontier section for a Z-independent robustness check.
+    Pareto-frontier sections for a Z-independent robustness check.
 """
 
 import sys
 import os
+import itertools
 import pandas as pd
 import numpy as np
 from scipy.stats import binomtest
+
+try:
+    import matplotlib.pyplot as plt
+    HAVE_MPL = True
+except ImportError:
+    HAVE_MPL = False
 
 # ---------------------------------------------------------------------------
 # Force working directory to project root - same depth logic as
@@ -96,6 +124,82 @@ BOOTSTRAP_K = 10            # draws per group in the "best-of-k" correction
 BOOTSTRAP_REPS = 2000
 SHORTLIST_PER_GROUP = 3     # candidates per feature count for the Stage-3 shortlist
 SHORTLIST_GROUPS = [5, 6, 7, 8, 9, 10]
+INTERACTION_TOP_N = 15      # how many pairwise interaction terms to print
+CONSTRAINED_EV_DELAY_THRESHOLD = 15.0   # seconds - "degenerate" cutoff for section 8b
+PLOTS_DIRNAME = 'ablation_analysis_plots'
+
+# Short codes used for the 'features_on' column in tables - full feature
+# names would blow tables out to 150+ chars/row (see FEATURE_LEGEND, printed
+# once near the top of the output, for the full-name mapping).
+FEATURE_CODE = {
+    'phase_onehot':                 'PH',
+    'vehicle_fullness':             'VF',
+    'waiting_mean':                 'WM',
+    'waiting_std':                  'WS',
+    'ev_max_wait':                  'EMW',
+    'downstream_occupancy':         'DO',
+    'ev_in_lane_indicator':         'EIL',
+    'ev_dist_to_next_veh':          'EDV',
+    'ev_speed':                     'ESP',
+    'ev_distance_to_intersection':  'EDI',
+}
+
+
+def decode_features_on(row):
+    """Compact ON-feature code for one combo row, e.g. 'WM+WS+EMW+EIL' -
+    see FEATURE_CODE / the legend printed near the top of the output for
+    what each code means."""
+    on = [FEATURE_CODE[f] for f in FEATURES if row[f] == 1]
+    return '+'.join(on) if on else '(none)'
+
+
+def print_feature_legend():
+    print("\nFeature codes used in the 'features_on' column below:")
+    for f in FEATURES:
+        print(f"  {FEATURE_CODE[f]:<4s} = {f}")
+
+
+def compact_for_display(df_subset):
+    """
+    Shrinks two wide columns for printing so rows fit on one terminal line
+    instead of word-wrapping mid-row: 'num_features_on' -> 'n_feat', and
+    'on_pareto_frontier' (True/False) -> 'pareto' (Y/N). Only touches
+    columns that are actually present, and returns a copy - never mutates
+    the original df.
+    """
+    out = df_subset.copy()
+    if 'num_features_on' in out.columns:
+        out = out.rename(columns={'num_features_on': 'n_feat'})
+    if 'on_pareto_frontier' in out.columns:
+        out['pareto'] = out['on_pareto_frontier'].map({True: 'Y', False: 'N'})
+        out = out.drop(columns=['on_pareto_frontier'])
+    return out
+
+
+def add_computed_columns(df):
+    """
+    Adds two columns used throughout the rest of the script, computed once
+    up front so later sections don't redo the O(n^2) Pareto-dominance pass
+    or the decode:
+      - 'features_on'        human-readable ON-feature list (see section 1/8/8b/9)
+      - 'on_pareto_frontier' bool, True if not simultaneously beaten on both
+                              ev_delay_mean AND all_reg_delay_mean by any
+                              other combo in the full grid (see section 8)
+    """
+    df['features_on'] = df.apply(decode_features_on, axis=1)
+
+    ev = df['ev_delay_mean'].values
+    reg = df['all_reg_delay_mean'].values
+    n = len(df)
+    is_dominated = np.zeros(n, dtype=bool)
+    for i in range(n):
+        dominated_by_other = ((ev <= ev[i]) & (reg <= reg[i]) &
+                               ((ev < ev[i]) | (reg < reg[i])))
+        dominated_by_other[i] = False
+        if dominated_by_other.any():
+            is_dominated[i] = True
+    df['on_pareto_frontier'] = ~is_dominated
+    return df
 
 
 def print_formula_banner(df):
@@ -158,9 +262,15 @@ def top_n_overall(df, n=TOP_N):
     print(f"1. TOP {n} COMBOS OVERALL (any feature count)")
     print("Larger cost = Worse | Lower cost = Better")
     print("=" * 70)
-    cols = ['combo_id', 'num_features_on', 'composite_cost',
-            'ev_delay_mean', 'all_reg_delay_mean']
-    print(df.sort_values('composite_cost')[cols].head(n).to_string(index=False))
+    cols = ['combo_id', 'features_on', 'num_features_on', 'composite_cost',
+            'ev_delay_mean', 'all_reg_delay_mean', 'on_pareto_frontier']
+    disp = compact_for_display(df.sort_values('composite_cost')[cols].head(n))
+    print(disp.to_string(index=False))
+    print("\n(pareto = Y means this combo is NOT beaten on both ev_delay_mean "
+          "AND all_reg_delay_mean simultaneously by any other combo - see "
+          "section 8. A top-by-composite-cost row with pareto = N is only "
+          "'best' under this specific Z; some other combo dominates it on "
+          "both objectives at once.)")
 
 
 def per_feature_count_summary(df):
@@ -173,8 +283,14 @@ def per_feature_count_summary(df):
           "MEAN/MEDIAN as the primary comparison, and see section 3 for a "
           "group-size-corrected 'expected best' figure.\n")
     g = df.groupby('num_features_on')['composite_cost'].agg(
-        n_combos='count', mean='mean', median='median', std='std', min='min'
+        n_combos='count',
+        mean_composite_cost='mean',
+        median_composite_cost='median',
+        std_composite_cost='std',
+        min_composite_cost='min',
     )
+    print("(all stats below are of composite_cost, in composite_cost units - "
+          "see the formula banner above)\n")
     print(g.to_string(float_format=lambda x: f"{x:.1f}"))
 
 
@@ -196,7 +312,9 @@ def bootstrapped_best_of_k(df, k=BOOTSTRAP_K, reps=BOOTSTRAP_REPS, seed=0):
         mins = [rng.choice(vals, size=k, replace=False).min() for _ in range(reps)]
         rows.append((n, len(vals), np.mean(mins), vals.min()))
     out = pd.DataFrame(rows, columns=['num_features_on', 'n_combos',
-                                       f'expected_best_of_{k}', 'raw_min'])
+                                       f'expected_best_composite_cost_of_{k}',
+                                       'raw_min_composite_cost'])
+    print("(both columns are composite_cost values, in composite_cost units)\n")
     print(out.to_string(index=False, float_format=lambda x: f"{x:.1f}",
                          na_rep='n/a (too few combos to resample)'))
 
@@ -207,6 +325,9 @@ def leave_one_out_table(df):
     group: each of those combos is the full 10-feature model with exactly
     one feature removed. This IS the standard ablation-table format used
     throughout the RL/traffic-signal-control literature.
+
+    Returns the computed DataFrame (or None if the table was skipped) so
+    section 10 can reuse it for the LOO bar chart without recomputing.
     """
     print("\n" + "=" * 70)
     print("4. LEAVE-ONE-OUT (LOO) ABLATION TABLE")
@@ -219,7 +340,7 @@ def leave_one_out_table(df):
         print("⚠️  Need exactly 1 combo at num_features_on=10 and >=1 at "
               "num_features_on=9 for this table - skipping "
               f"(have {len(full)} and {len(loo)} respectively).")
-        return
+        return None
 
     full_cost = full.iloc[0]['composite_cost']
     print(f"Full-model (all 10 features) composite_cost = {full_cost:.2f}\n")
@@ -229,12 +350,16 @@ def leave_one_out_table(df):
         off_feats = [f for f in FEATURES if row[f] == 0]
         removed = off_feats[0] if len(off_feats) == 1 else f"AMBIGUOUS: {off_feats}"
         rows.append((removed, row['composite_cost'], row['composite_cost'] - full_cost))
-    out = pd.DataFrame(rows, columns=['feature_removed', 'composite_cost', 'delta_vs_full'])
-    out = out.sort_values('delta_vs_full', ascending=False)
+    out = pd.DataFrame(rows, columns=['feature_removed', 'composite_cost',
+                                       'delta_composite_cost_vs_full'])
+    out = out.sort_values('delta_composite_cost_vs_full', ascending=False)
+    print("(composite_cost = score of the 10-feature model with this one "
+          "feature removed; delta = that minus the full-model score above)\n")
     print(out.to_string(index=False, float_format=lambda x: f"{x:+.2f}"))
     print("\n(positive delta = removing this feature made things WORSE, i.e. "
           "the feature is helpful; negative delta = removing it IMPROVED "
           "the score, i.e. the feature may be net-harmful or redundant here)")
+    return out
 
 
 def feature_importance(df):
@@ -249,14 +374,19 @@ def feature_importance(df):
         rows.append((f, on_mean, off_mean, on_mean - off_mean,
                       (df[f] == 1).sum(), (df[f] == 0).sum()))
     imp = pd.DataFrame(
-        rows, columns=['feature', 'mean_cost_ON', 'mean_cost_OFF',
+        rows, columns=['feature', 'mean_composite_cost_ON', 'mean_composite_cost_OFF',
                         'delta_ON_minus_OFF', 'n_on', 'n_off']
     ).sort_values('delta_ON_minus_OFF')
+    print("(mean_composite_cost_ON/OFF = average composite_cost across all "
+          "combos with this feature ON vs OFF)\n")
     print(imp.to_string(index=False, float_format=lambda x: f"{x:.1f}"))
     print("\n(negative delta = feature ON is associated with LOWER cost, i.e. helpful)")
 
 
 def linear_regression_check(df):
+    """Returns the fitted main-effect coefficients (Series indexed by
+    FEATURES) so section 10 can reuse them for the feature-importance bar
+    chart without refitting."""
     print("\n" + "=" * 70)
     print("6. LINEAR REGRESSION: composite_cost ~ feature bits (no interactions)")
     print("Larger cost = Worse | Lower cost = Better")
@@ -266,10 +396,69 @@ def linear_regression_check(df):
     y = df['composite_cost'].values.astype(float)
     coef, *_ = np.linalg.lstsq(X, y, rcond=None)
     coefs = pd.Series(coef[1:], index=FEATURES).sort_values()
+    print("(each value = estimated change in composite_cost from turning that "
+          "feature ON, holding all other features fixed - same units as "
+          "composite_cost, e.g. -845 means ~845 lower/better composite_cost)\n")
     print(coefs.to_string(float_format=lambda x: f"{x:+.2f}"))
     print("\n(negative coefficient = turning this feature ON is associated with "
           "lower cost, holding the other bits fixed - a rough, interaction-free "
           "importance ranking; sanity-check against section 5 above)")
+    return coefs
+
+
+def interaction_regression(df, n_top=INTERACTION_TOP_N):
+    """
+    Second regression: composite_cost ~ 10 main effects + all 45 pairwise
+    products (feature_i * feature_j for i<j). 1023 rows vs 55 terms is
+    well-determined, so this puts an actual number on interaction stories
+    (e.g. phase_onehot/ev_in_lane_indicator) instead of inferring them by
+    eyeballing sections 4/5/7 the way the qualitative writeup did.
+    """
+    print("\n" + "=" * 70)
+    print("6b. PAIRWISE INTERACTION REGRESSION "
+          "(main effects + all 45 pairwise terms)")
+    print("=" * 70)
+
+    pairs = list(itertools.combinations(FEATURES, 2))
+    n = len(df)
+    X_main = df[FEATURES].values.astype(float)
+    X_inter = np.column_stack([
+        df[a].values.astype(float) * df[b].values.astype(float) for a, b in pairs
+    ])
+    X = np.column_stack([np.ones(n), X_main, X_inter])
+    y = df['composite_cost'].values.astype(float)
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+
+    main_coefs = pd.Series(coef[1:1 + len(FEATURES)], index=FEATURES)
+    inter_names = [f"{a}  x  {b}" for a, b in pairs]
+    inter_coefs = pd.Series(coef[1 + len(FEATURES):], index=inter_names)
+
+    print(f"Design: {n} rows, {1 + len(FEATURES) + len(pairs)} terms "
+          f"(1 intercept + {len(FEATURES)} main effects + {len(pairs)} pairwise).\n")
+
+    print("Main effects (co-estimated with interactions - compare to section 6):")
+    print(main_coefs.sort_values().to_string(float_format=lambda x: f"{x:+.2f}"))
+
+    top_inter = inter_coefs.reindex(inter_coefs.abs().sort_values(ascending=False).index).head(n_top)
+    print(f"\nTop {n_top} pairwise interactions by |coefficient| (of {len(pairs)} total):")
+    print(top_inter.to_string(float_format=lambda x: f"{x:+.2f}"))
+
+    key = "phase_onehot  x  ev_in_lane_indicator"
+    if key in inter_coefs.index:
+        print(f"\n{key}: {inter_coefs[key]:+.2f}")
+        print("(this is the formal test of the phase_onehot/ev_in_lane_indicator "
+              "redundancy story from sections 4/5/7 - a positive value means "
+              "having BOTH on together costs more than the sum of their two "
+              "separate main effects, i.e. redundancy/diminishing returns once "
+              "both are present; a negative value would mean synergy instead.)")
+
+    print("\n(each interaction coefficient = the EXTRA change in composite_cost "
+          "when both features in the pair are ON together, beyond what their "
+          "two main effects alone would predict, holding every other term "
+          "fixed. With 55 correlated terms on this many rows, treat individual "
+          "coefficients as suggestive rather than precise - useful for "
+          "confirming a direction/sign, not for citing an exact magnitude.)")
+    return main_coefs, inter_coefs
 
 
 def enrichment_analysis(df, n=ENRICHMENT_TOP_N):
@@ -293,6 +482,10 @@ def enrichment_analysis(df, n=ENRICHMENT_TOP_N):
     out = pd.DataFrame(rows, columns=['feature', 'base_rate', 'top_n_rate',
                                        'n_on', 'n_off', 'p_value'])
     out = out.sort_values('p_value')
+    print("(base_rate/top_n_rate = fraction of combos with this feature ON, "
+          "i.e. NOT composite_cost - base_rate is across all 1023 combos, "
+          f"top_n_rate is within just the top {n} by composite_cost)\n")
+    print("A low p_value (~0) corresponds to high confidence of an association/trend. While a high p_value (~1) means no detectable association/trend. Thus, partial p_values are more 'suggestive, not proven'\n")
     print(out.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
     print(f"\n(top_n_rate >> base_rate with small p_value = feature is enriched "
           f"i.e. over-represented among the best {n} combos - a stronger "
@@ -303,29 +496,20 @@ def enrichment_analysis(df, n=ENRICHMENT_TOP_N):
 
 def pareto_frontier(df):
     """
-    (c) Flag combos that are Pareto-optimal on (ev_delay_mean, all_reg_delay_mean)
-    - not simultaneously beaten on BOTH objectives by any other combo. These
-    are defensible choices regardless of the exact Z used to build
-    composite_cost.
+    (c) Print the Pareto-frontier explanation and table. The dominance
+    computation itself was already done once in add_computed_columns() -
+    this just reads df['on_pareto_frontier'] rather than recomputing the
+    O(n^2) pass a second time.
     """
     print("\n" + "=" * 70)
     print("8. PARETO-FRONTIER FLAGGING (ev_delay_mean vs. all_reg_delay_mean, "
           "both minimized)")
     print("=" * 70)
-    ev = df['ev_delay_mean'].values
-    reg = df['all_reg_delay_mean'].values
     n = len(df)
-    is_dominated = np.zeros(n, dtype=bool)
-    for i in range(n):
-        dominated_by_other = ((ev <= ev[i]) & (reg <= reg[i]) &
-                               ((ev < ev[i]) | (reg < reg[i])))
-        dominated_by_other[i] = False
-        if dominated_by_other.any():
-            is_dominated[i] = True
-
-    frontier = df.loc[~is_dominated].sort_values('ev_delay_mean')
-    print(f"{len(frontier)} of {n} combos are Pareto-optimal.\n")
-    cols = ['combo_id', 'num_features_on', 'ev_delay_mean',
+    frontier = df.loc[df['on_pareto_frontier']].sort_values('ev_delay_mean')
+    print(f"{len(frontier)} of {n} combos are Pareto-optimal. Pareto-optimal refers to 'not beaten on both axes simultaneously.'\n")
+    print("This is useful for seeing the trade-offs and how further decreases in delay of one group results in substantial delay increases for the other group.\n")
+    cols = ['combo_id', 'features_on', 'num_features_on', 'ev_delay_mean',
             'all_reg_delay_mean', 'composite_cost']
     print(frontier[cols].to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 
@@ -338,6 +522,56 @@ def pareto_frontier(df):
               "simultaneously - worth double-checking Z is well-tuned, or "
               "just note the composite-best still involves this tradeoff.")
     return frontier
+
+
+def constrained_pareto_frontier(df, frontier, ev_threshold=CONSTRAINED_EV_DELAY_THRESHOLD):
+    """
+    (d) A second, "practical" frontier: first drop any combo with
+    ev_delay_mean above ev_threshold (degenerate - essentially ignoring
+    EVs to win on regular-traffic delay), THEN compute Pareto dominance
+    among what's left. This is what addresses the two catastrophic-EV-delay
+    frontier points flagged earlier (e.g. combos with 25-35s EV delay that
+    are technically non-dominated but not real candidates).
+    """
+    print("\n" + "=" * 70)
+    print("8b. CONSTRAINED / PRACTICAL PARETO FRONTIER "
+          f"(excludes ev_delay_mean > {ev_threshold:.0f}s as degenerate)")
+    print("=" * 70)
+
+    sub = df[df['ev_delay_mean'] <= ev_threshold].copy()
+    excluded = df[df['ev_delay_mean'] > ev_threshold]
+    print(f"{len(excluded)} of {len(df)} combos excluded outright for "
+          f"ev_delay_mean > {ev_threshold:.0f}s before dominance is even computed.\n")
+
+    ev = sub['ev_delay_mean'].values
+    reg = sub['all_reg_delay_mean'].values
+    n = len(sub)
+    is_dominated = np.zeros(n, dtype=bool)
+    for i in range(n):
+        dominated_by_other = ((ev <= ev[i]) & (reg <= reg[i]) &
+                               ((ev < ev[i]) | (reg < reg[i])))
+        dominated_by_other[i] = False
+        if dominated_by_other.any():
+            is_dominated[i] = True
+    constrained = sub.loc[~is_dominated].sort_values('ev_delay_mean')
+
+    print(f"{len(constrained)} of {n} threshold-qualifying combos are "
+          f"Pareto-optimal within this constrained set.\n")
+    cols = ['combo_id', 'features_on', 'num_features_on', 'ev_delay_mean',
+            'all_reg_delay_mean', 'composite_cost']
+    print(constrained[cols].to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+
+    dropped = frontier[frontier['ev_delay_mean'] > ev_threshold]
+    if len(dropped):
+        print(f"\n{len(dropped)} combo(s) were on the FULL Pareto frontier (section 8) "
+              f"but are excluded here as degenerate:")
+        print(dropped[['combo_id', 'features_on', 'ev_delay_mean', 'all_reg_delay_mean']]
+              .to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    else:
+        print("\nNo full-frontier combos were excluded - the full and constrained "
+              "frontiers agree on membership at this threshold.")
+
+    return constrained
 
 
 def stage3_shortlist(df, frontier):
@@ -365,27 +599,179 @@ def stage3_shortlist(df, frontier):
         shortlist = pd.concat([shortlist, frontier_extra])
 
     shortlist = shortlist.sort_values(['num_features_on', 'composite_cost'])
-    shortlist['on_pareto_frontier'] = shortlist['combo_id'].isin(frontier['combo_id'])
-    cols = ['combo_id', 'num_features_on', 'composite_cost',
+    # on_pareto_frontier is already a column on df (from add_computed_columns),
+    # carried through automatically - no need to recompute via isin() here.
+    cols = ['combo_id', 'features_on', 'num_features_on', 'composite_cost',
             'ev_delay_mean', 'all_reg_delay_mean', 'on_pareto_frontier']
-    print(shortlist[cols].to_string(index=False, float_format=lambda x: f"{x:.2f}"))
+    disp = compact_for_display(shortlist[cols])
+    print(disp.to_string(index=False, float_format=lambda x: f"{x:.2f}"))
     print(f"\n{len(shortlist)} combos total - a feasible size for a "
           f"confirmatory rerun batch (e.g. 500 episodes x 2-3 seeds each), "
           f"vs. re-running all {len(df)}.")
 
 
+def make_plots(df, frontier, constrained_frontier, coefs, loo_df, csv_path):
+    """
+    Saves PNGs to <folder containing the CSV>/PLOTS_DIRNAME/, and also
+    calls plt.show() so they appear in an interactive session (e.g.
+    Spyder's Plots pane). Silently no-ops if matplotlib isn't installed.
+    """
+    print("\n" + "=" * 70)
+    print("10. GRAPHS")
+    print("=" * 70)
+    if not HAVE_MPL:
+        print("⚠️  matplotlib not installed - skipping graphs "
+              "(pip install matplotlib to enable this section).")
+        return
+
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(csv_path)), PLOTS_DIRNAME)
+    os.makedirs(out_dir, exist_ok=True)
+    saved = []
+
+    def _save(fig, name):
+        path = os.path.join(out_dir, name)
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        saved.append(path)
+        try:
+            plt.show()
+        except Exception:
+            pass
+        plt.close(fig)
+
+    # --- 1. Feature count vs composite cost ---------------------------------
+    fig, ax = plt.subplots(figsize=(10, 6))
+    counts = sorted(df['num_features_on'].unique())
+    groups = [df.loc[df['num_features_on'] == n, 'composite_cost'].values for n in counts]
+    bp = ax.boxplot(groups, tick_labels=[str(c) for c in counts], showmeans=True)
+    ax.set_xlabel('Number of features ON')
+    ax.set_ylabel('composite_cost (lower = better)')
+    ax.set_title('Composite cost distribution by feature count')
+    # Legend explaining the boxplot anatomy - matplotlib's defaults (orange
+    # median line, green triangle mean marker) aren't self-explanatory.
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    box_color = bp['boxes'][0].get_color()
+    median_color = bp['medians'][0].get_color()
+    mean_marker = bp['means'][0]
+    legend_handles = [
+        Patch(facecolor='none', edgecolor=box_color, label='Box = IQR (25th-75th percentile)'),
+        Line2D([0], [0], color=median_color, label='Median'),
+        Line2D([0], [0], marker=mean_marker.get_marker(), color='w',
+               markerfacecolor=mean_marker.get_markerfacecolor(),
+               markeredgecolor=mean_marker.get_markeredgecolor(),
+               markersize=8, label='Mean'),
+        Line2D([0], [0], color=box_color, linestyle='--', label='Whiskers (within 1.5x IQR)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='none',
+               markeredgecolor=box_color, markersize=6, label='Outliers'),
+    ]
+    ax.legend(handles=legend_handles, loc='upper right', fontsize=8)
+    _save(fig, 'feature_count_vs_composite_cost.png')
+
+    # --- 2. EV delay vs reg delay, all combos --------------------------------
+    fig, ax = plt.subplots(figsize=(8, 7))
+    non_frontier = df.loc[~df['on_pareto_frontier']]
+    ax.scatter(non_frontier['ev_delay_mean'], non_frontier['all_reg_delay_mean'],
+               s=10, alpha=0.25, color='gray', label='Dominated')
+    ax.scatter(frontier['ev_delay_mean'], frontier['all_reg_delay_mean'],
+               s=35, color='crimson', label='Pareto-optimal (full frontier)')
+    ax.set_xlabel('EV delay mean (s)')
+    ax.set_ylabel('All regular-vehicle delay mean (s)')
+    ax.set_title('EV delay vs. regular-vehicle delay - all combos')
+    ax.legend()
+    _save(fig, 'ev_vs_reg_delay_all_combos.png')
+
+    # --- 3. EV delay vs reg delay, Pareto frontier only ----------------------
+    fig, ax = plt.subplots(figsize=(8, 7))
+    frontier_sorted = frontier.sort_values('ev_delay_mean')
+    ax.plot(frontier_sorted['ev_delay_mean'], frontier_sorted['all_reg_delay_mean'],
+            '-o', color='crimson', label='Full Pareto frontier')
+    constrained_ids = set(constrained_frontier['combo_id'])
+    degenerate = frontier_sorted[~frontier_sorted['combo_id'].isin(constrained_ids)]
+    if len(degenerate):
+        ax.scatter(degenerate['ev_delay_mean'], degenerate['all_reg_delay_mean'],
+                   marker='x', s=90, color='black', linewidths=2,
+                   label=f'Excluded as degenerate (>{CONSTRAINED_EV_DELAY_THRESHOLD:.0f}s EV delay)')
+    ax.set_xlabel('EV delay mean (s)')
+    ax.set_ylabel('All regular-vehicle delay mean (s)')
+    ax.set_title('Pareto frontier: EV delay vs. regular-vehicle delay trade-off')
+    ax.legend()
+    _save(fig, 'ev_vs_reg_delay_pareto_frontier.png')
+    
+    # --- 3.1 EV delay vs reg delay, Pareto frontier only showing (0,0) ----------------------
+    fig, ax = plt.subplots(figsize=(8, 7))
+    
+    frontier_sorted = frontier.sort_values('ev_delay_mean')
+    
+    x = frontier_sorted['ev_delay_mean'].tolist()
+    y = frontier_sorted['all_reg_delay_mean'].tolist()
+    
+    ax.plot(x, y, '-o', color='crimson', label='Full Pareto frontier')
+    
+    constrained_ids = set(constrained_frontier['combo_id'])
+    degenerate = frontier_sorted[~frontier_sorted['combo_id'].isin(constrained_ids)]
+    
+    if len(degenerate):
+        ax.scatter(degenerate['ev_delay_mean'], degenerate['all_reg_delay_mean'],
+                   marker='x', s=90, color='black', linewidths=2,
+                   label=f'Excluded as degenerate (>{CONSTRAINED_EV_DELAY_THRESHOLD:.0f}s EV delay)')
+    
+    ax.set_xlabel('EV delay mean (s)')
+    ax.set_ylabel('All regular-vehicle delay mean (s)')
+    ax.set_title('Pareto frontier: EV delay vs. regular-vehicle delay trade-off')
+    ax.legend()
+    
+    # Make sure (0, 0) is visible
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0)
+    
+    _save(fig, 'ev_vs_reg_delay_pareto_frontier_origin_shown.png')
+
+    # --- 4. Feature importance (linear regression main effects) -------------
+    fig, ax = plt.subplots(figsize=(9, 6))
+    coefs_sorted = coefs.sort_values()
+    colors = ['seagreen' if v < 0 else 'indianred' for v in coefs_sorted.values]
+    ax.barh(coefs_sorted.index, coefs_sorted.values, color=colors)
+    ax.axvline(0, color='black', linewidth=0.8)
+    ax.set_xlabel('Regression coefficient (Δ composite_cost from turning ON)')
+    ax.set_title('Feature importance - linear regression main effects\n'
+                  '(green = helpful, red = harmful)')
+    _save(fig, 'feature_importance_regression.png')
+
+    # --- 5. LOO ablation bar chart -------------------------------------------
+    if loo_df is not None:
+        fig, ax = plt.subplots(figsize=(9, 6))
+        loo_sorted = loo_df.sort_values('delta_composite_cost_vs_full')
+        colors = ['indianred' if v > 0 else 'seagreen'
+                  for v in loo_sorted['delta_composite_cost_vs_full']]
+        ax.barh(loo_sorted['feature_removed'], loo_sorted['delta_composite_cost_vs_full'],
+                color=colors)
+        ax.axvline(0, color='black', linewidth=0.8)
+        ax.set_xlabel('Δ composite_cost when this feature is removed from the full model')
+        ax.set_title('Leave-one-out ablation\n(red = feature is helpful, green = removing it improved the score)')
+        _save(fig, 'loo_ablation.png')
+
+    print(f"Saved {len(saved)} plot(s) to: {out_dir}")
+    for p in saved:
+        print(f"  - {os.path.basename(p)}")
+
+
 def main(path):
     df = load(path)
+    add_computed_columns(df)
     print_formula_banner(df)
+    print_feature_legend()
     top_n_overall(df)
     per_feature_count_summary(df)
     bootstrapped_best_of_k(df)
-    leave_one_out_table(df)
+    loo_df = leave_one_out_table(df)
     feature_importance(df)
-    linear_regression_check(df)
+    coefs = linear_regression_check(df)
+    interaction_regression(df)
     enrichment_analysis(df)
     frontier = pareto_frontier(df)
+    constrained_frontier = constrained_pareto_frontier(df, frontier)
     stage3_shortlist(df, frontier)
+    make_plots(df, frontier, constrained_frontier, coefs, loo_df, path)
 
     print("\n" + "=" * 70)
     print("CAVEATS")
