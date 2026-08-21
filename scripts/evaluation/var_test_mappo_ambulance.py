@@ -37,23 +37,15 @@ from src.agents.MAPPOagent import MAPPOAgent
 from src.core.parlenv import PARLSumoEnv
 from src.core.Rewards import GetRewards
 from src.core.Observations import FYP_OBS_CONFIG, get_fyp_observation_dims, print_fyp_obs_config
+from scripts.utils.generate_regular_demand import generate_regular_demand  # adjust import path to match where you saved it
 
 
 # ============================================================================
-# NEW: Evaluation demand pools
+# NEW: Evaluation demand
 # ============================================================================
-# Default pools for the "realistic" 1800 regular / 100s EV combination (this
-# matches CURRICULUM stage 3's reg_1800 / ev_100s files in
-# CL_train_parl_mappo_ambulance.py). One (regular_file, ev_file) pair is
-# sampled per test episode - rng below is reproducible per episode (seeded
-# by seed+ep), same convention as sample_episode_demand() in the training
-# script, so re-running with the same --seed reproduces the same sequence
-# of demand-file combinations.
-DEFAULT_REGULAR_POOL = [
-    "demand_regular/reg_1800_v1.rou.xml",
-    "demand_regular/reg_1800_v2.rou.xml",
-    "demand_regular/reg_1800_v3.rou.xml",
-]
+# Regular demand is now GENERATED per test episode (Poisson arrivals, random
+# OD pairs) rather than sampled from a pool of pre-made files - see
+# generate_regular_demand.py. EV pool is unchanged.
 DEFAULT_EV_POOL = [
     "demand_ev/ev_100s_v1.rou.xml",
     "demand_ev/ev_100s_v2.rou.xml",
@@ -61,17 +53,24 @@ DEFAULT_EV_POOL = [
 ]
 
 
-def sample_episode_demand(episode: int, regular_pool, ev_pool, rng=None):
+def sample_episode_demand(episode: int, scenario_dir: str, base_seed: int, ev_pool, rng=None):
     """
-    Pick (regular_file, ev_file) for one test episode, sampled uniformly and
-    independently from the given pools. Mirrors sample_episode_demand() in
-    CL_train_parl_mappo_ambulance.py, minus the curriculum-stage logic (test
-    time always draws from one fixed pool - no ramping).
+    Pick this test episode's (regular_file, ev_file). ev_file is still
+    sampled from ev_pool as before. regular_file is now generated fresh from
+    reg_seed = base_seed + episode - the same seed env.set_seed() uses below,
+    so re-running the same episode under the same --seed reproduces
+    byte-identical regular demand.
     """
     rng = rng or random
-    reg_file = rng.choice(regular_pool)
     ev_file = rng.choice(ev_pool)
-    return reg_file, ev_file
+
+    reg_seed = base_seed + episode
+    reg_rel  = os.path.join("demand_regular", "generated", f"reg_poisson_seed{reg_seed}.rou.xml")
+    reg_abs  = os.path.join(scenario_dir, reg_rel)
+    if not os.path.exists(reg_abs):
+        generate_regular_demand(seed=reg_seed, output_path=reg_abs)
+
+    return reg_rel, ev_file
 
 
 # ============================================================================
@@ -211,6 +210,18 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
         'ev':      [float(x) for x in world.finished_ev_delays],
     }
 
+    # NEW: per-episode TOTAL delay (sum across every finished vehicle in
+    # that group, this episode only) - the "per-episode total, averaged
+    # across episodes" metric, as distinct from the per-vehicle mean above.
+    # test_model() averages these across episodes for the total-delay-vs-Z
+    # plots.
+    ep_total_delays = {
+        'group1_delay_total':  float(np.sum(ep_raw_delays['group1'])),
+        'group2_delay_total':  float(np.sum(ep_raw_delays['group2'])),
+        'all_reg_delay_total': float(np.sum(ep_raw_delays['all_reg'])),
+        'ev_delay_total':      float(np.sum(ep_raw_delays['ev'])),
+    }
+
     # Episode-level averages: per-intersection, global (pooled), and the
     # single "focus" intersection (kept as top-level keys for backward compat)
     focus_aid = agent_ids[focus_agent_idx]
@@ -286,6 +297,8 @@ def run_test_episode(env, agent, deterministic=True, verbose=False, focus_agent_
         'group2_delay_mean': g2_mean, 'group2_delay_std': g2_std, 'group2_delay_n': g2_n,
         'all_reg_delay_mean': all_mean, 'all_reg_delay_std': all_std, 'all_reg_delay_n': all_n,
         'ev_delay_mean': ev_mean, 'ev_delay_std': ev_std, 'ev_delay_n': ev_n,
+        # NEW: this episode's TOTAL delay per group (sum, not mean) - see comment above.
+        **ep_total_delays,
         # NEW: raw per-vehicle delay values for this episode (for histogram /
         # distribution plots downstream - see plot_delay_distributions.py).
         'raw_delays': ep_raw_delays,
@@ -340,15 +353,15 @@ def test_model(
     config_path,
     scenario_dir,
     Z=None,
-    num_episodes=1,
+    num_episodes=10,
     deterministic=True,
     seed=42,
     gui=False,
     save_results=None,
     verbose=False,
     focus_agent_idx=0,
-    regular_pool=None,
     ev_pool=None,
+    reward_variant='new',
 ):
     """
     Evaluate a trained MAPPO-Ambulance model.
@@ -359,7 +372,6 @@ def test_model(
         3. mappo_ambulance.yaml  ambulance.Z
         4. Hard-coded defaults (1.0)
     """
-    regular_pool = regular_pool if regular_pool else DEFAULT_REGULAR_POOL
     ev_pool = ev_pool if ev_pool else DEFAULT_EV_POOL
 
     print("=" * 80)
@@ -371,7 +383,7 @@ def test_model(
     print(f"Episodes       : {num_episodes}")
     print(f"Policy         : {'deterministic' if deterministic else 'stochastic'}")
     print(f"GUI            : {'on' if gui else 'off'}")
-    print(f"Regular pool   : {regular_pool}")
+    print(f"Regular demand : generated (Poisson, seed+episode)")
     print(f"EV pool        : {ev_pool}")
     print("=" * 80 + "\n")
 
@@ -415,10 +427,18 @@ def test_model(
          else config.get('algorithm', {}).get('ambulance', {}).get('Z', 3.0))
 
     print(f"Using Z={Z}")
-    print("Reward formula : -sum(lane_weights * lane_queues) # new reward function, where lane_weights = (1 + Z/EV_norm_tta)\n")
 
     # Inject Z so the reward function uses the correct values
-    GetRewards.REWARD_CONFIGS['final_year_project_reward']['Z'] = Z 
+    GetRewards.REWARD_CONFIGS['project1_std_reward']['Z'] = Z
+
+    # Which project1-std reward formula to use for computing avg_reward
+    # during eval (OLD baseline vs NEW FYP) - should match whatever the
+    # model was actually trained with. See GetRewards.REWARD_VARIANT /
+    # _dispatch_project1_std_reward() in Rewards.py. Does NOT affect the
+    # delay metrics (EV/Group1/Group2/All-Reg delay) - those come straight
+    # from SUMO per-vehicle stats regardless of reward formula.
+    GetRewards.REWARD_VARIANT = reward_variant
+    print(f"Using reward variant={reward_variant.upper()}")
 
     # ------------------------------------------------------------------
     # Reproducibility
@@ -429,7 +449,17 @@ def test_model(
     # ------------------------------------------------------------------
     # Build SUMO config
     # ------------------------------------------------------------------
-    configs_dir = "tmp/test_mappo_ambulance_configs"
+    # PATCHED for run_shortlist_multiseed_grid.py: this used to be one fixed
+    # shared path ("tmp/test_mappo_ambulance_configs") written by every
+    # evaluation run regardless of which model was being evaluated. That's
+    # harmless run-one-at-a-time (as in the original Stage-1 ablation grid),
+    # but two evaluations running concurrently would overwrite each other's
+    # test_sumo_config.json - possibly evaluating one model against another
+    # model's scenario, silently. Keying the dir on the process ID makes
+    # every concurrent evaluation subprocess use its own path automatically,
+    # with no new CLI flag and no change to single-run behaviour beyond one
+    # extra path segment.
+    configs_dir = os.path.join("tmp", "test_mappo_ambulance_configs", f"pid_{os.getpid()}")
     os.makedirs(configs_dir, exist_ok=True)
 
     # NOTE: "combined_file" is deliberately omitted here, same as
@@ -440,14 +470,21 @@ def test_model(
     # files regardless of seed. "flowFile" here is just the *initial* combo
     # used for env creation/dimension probing; set_demand_files() overrides
     # it before every episode's reset().
-    initial_reg = (regular_pool if regular_pool else DEFAULT_REGULAR_POOL)[0]
+    # Episode loop below runs `for ep in range(num_episodes)`, i.e. ep=0 first,
+    # using reg_seed = seed + 0. Generating that same file here means it's
+    # reused (not wasted) once the loop reaches episode 0's
+    # sample_episode_demand() call, which skips regeneration if it already exists.
+    initial_reg_seed = seed + 0
+    initial_reg_rel = os.path.join("demand_regular", "generated", f"reg_poisson_seed{initial_reg_seed}.rou.xml")
+    initial_reg = initial_reg_rel
+    generate_regular_demand(seed=initial_reg_seed, output_path=os.path.join(scenario_dir, initial_reg_rel))
     initial_ev = (ev_pool if ev_pool else DEFAULT_EV_POOL)[0]
     sumo_cfg = {
         "name":             "test_mappo_emergency_ambulance", # was 'test_emergency_ambulance' historically
         "dir":              scenario_dir,
         "roadnetFile":      "3_intersection_corridor_250long.net.xml",
         "flowFile":         f"vtypes.rou.xml,{initial_reg},{initial_ev}",
-        "gui":              True, # Hardwired on — run via Spyder, not CLI, so --gui flag isn't convenient. Flip to False here (or back to `gui` param) if you want it off.
+        "gui":              False, # Flipped to False for unattended ablation-grid runs (was hardwired True for Spyder use)
         "no_warning":       True,
         "decision_interval": 5, # was 5 
         "min_green":         5, # was 5 
@@ -571,7 +608,7 @@ def test_model(
     for ep in range(num_episodes):
         ep_seed = seed + ep
         reg_file, ev_file = sample_episode_demand(
-            ep, regular_pool, ev_pool, rng=random.Random(seed + ep)
+            ep, scenario_dir, base_seed=seed, ev_pool=ev_pool, rng=random.Random(seed + ep)
         )
         env.set_demand_files(reg_file, ev_file)
         env.set_seed(ep_seed)
@@ -650,6 +687,12 @@ def test_model(
     evm_m, evm_s   = _stats('ev_delay_mean')
     evs_m, evs_s   = _stats('ev_delay_std')
 
+    # NEW: per-episode TOTAL delay (sum, not mean), averaged across episodes.
+    g1t_m, g1t_s   = _stats('group1_delay_total')
+    g2t_m, g2t_s   = _stats('group2_delay_total')
+    allt_m, allt_s = _stats('all_reg_delay_total')
+    evt_m, evt_s   = _stats('ev_delay_total')
+
     focus_aid = all_results[0]['focus_agent_id'] if all_results else None
 
     print(f"\n{'='*80}")
@@ -681,6 +724,11 @@ def test_model(
     print(f"  Group 2 delay std.   (s) : {g2s_m:8.2f} +/- {g2s_s:.2f}")
     print(f"  All Reg. mean delay  (s) : {allm_m:8.2f} +/- {allm_s:.2f}")
     print(f"  All Reg. delay std.  (s) : {alls_m:8.2f} +/- {alls_s:.2f}")
+    print()
+    print(f"  EV delay TOTAL/ep    (s) : {evt_m:8.1f} +/- {evt_s:.1f}")
+    print(f"  Group 1 delay TOTAL/ep(s): {g1t_m:8.1f} +/- {g1t_s:.1f}")
+    print(f"  Group 2 delay TOTAL/ep(s): {g2t_m:8.1f} +/- {g2t_s:.1f}")
+    print(f"  All Reg. delay TOTAL/ep(s):{allt_m:8.1f} +/- {allt_s:.1f}")
     print(f"{'='*80}\n")
 
     # per-intersection breakdown (mean over episodes for every intersection)
@@ -700,10 +748,12 @@ def test_model(
         'num_episodes':          num_episodes,
         'deterministic':         deterministic,
         'seed':                  seed,
-        # NEW: which demand-file pools were sampled from, and the exact
-        # (regular, ev) combo drawn for each episode (also inside
-        # all_results, kept here too for a quick top-level glance)
-        'regular_pool':          regular_pool,
+        # NEW: regular demand is generated (Poisson, seed+episode) rather
+        # than sampled from a pool; ev_pool is still sampled as before. The
+        # exact (regular, ev) combo used for each episode is recorded per-
+        # episode below (also inside all_results, kept here for a quick
+        # top-level glance).
+        'regular_demand':        'generated (Poisson, seed+episode)',
         'ev_pool':               ev_pool,
         'episode_demand_files':  [
             {'episode': i + 1, 'regular': r['regular_demand_file'], 'ev': r['ev_demand_file']}
@@ -731,6 +781,16 @@ def test_model(
         'all_reg_delay_std_mean': alls_m, 'all_reg_delay_std_std': alls_s,
         'ev_delay_mean': evm_m, 'ev_delay_std': evm_s,
         'ev_delay_std_mean': evs_m, 'ev_delay_std_std': evs_s,
+        # NEW: per-episode TOTAL delay (sum across finished vehicles in that
+        # episode), averaged +/- std across episodes - distinct from the
+        # per-vehicle *_delay_mean above.
+        'group1_delay_total_mean': g1t_m, 'group1_delay_total_std': g1t_s,
+        'group2_delay_total_mean': g2t_m, 'group2_delay_total_std': g2t_s,
+        'all_reg_delay_total_mean': allt_m, 'all_reg_delay_total_std': allt_s,
+        'ev_delay_total_mean': evt_m, 'ev_delay_total_std': evt_s,
+        # Which project1-std reward formula (OLD baseline vs NEW FYP) this
+        # model was evaluated with - see reward_variant param.
+        'reward_variant':        reward_variant,
         # NEW: per-intersection waiting-time metrics, keyed by agent_id
         'per_intersection_summary': per_intersection_summary,
         # Snapshot of the observation feature toggles used for this test run
@@ -786,7 +846,7 @@ Examples:
 """)
 
     parser.add_argument('--model-path', type=str, #required=True, removed 'required' and added default to run in IDE instead
-                        default='experiments/bestmodel_mappo_ambulance_K0.5_Z40_seed42_20260804_210135/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
+                        default='experiments/mappo_ambulance_K0.5_Z40_seed42_20260813_195128/models/agent_final.pt', # TODO: TRAINED AGENT: switch this to be path to the trained agent you wish to use (from root project folder)
                         help='Path to the .pt model checkpoint')
     
     # This one is important for the Reward Function setup (parameters) AND agent model (mappo or lmorl) along with the relevant Hyperparameters - WHICH ARE CONFIGURED WITHIN THE CONFIG .yaml FILE ITSELF!!!
@@ -801,11 +861,14 @@ Examples:
     parser.add_argument('--Z', type=float, default=None,
                         help='EMV penalty multiplier Z (auto-detected from exp_config.json if omitted)')
 
-    parser.add_argument('--num-episodes', type=int, default=1,
+    parser.add_argument('--reward-variant', type=str, default='new', choices=['old', 'new'],
+                        help="Which project1-std reward formula the model was trained with "
+                             "(only affects the logged avg_reward number, not the delay "
+                             "metrics themselves). Should match --reward-variant used at "
+                             "training time. Default: 'new'.")
+
+    parser.add_argument('--num-episodes', type=int, default=5,
                         help='Number of test episodes (default: 5)')
-    parser.add_argument('--regular-pool', type=str, nargs='+', default=None,
-                        help='Regular-traffic demand files to sample from, one per episode '
-                             '(relative to --scenario-dir; default: reg_1800_v1/v2/v3)')
     parser.add_argument('--ev-pool', type=str, nargs='+', default=None,
                         help='EV demand files to sample from, one per episode '
                              '(relative to --scenario-dir; default: ev_100s_v1/v2/v3)')
@@ -819,7 +882,7 @@ Examples:
                         help='Print step-level progress every 50 steps')
     
     #                                               default=None or default='evaluations/filename_to_save_as.json'
-    parser.add_argument('--save-results', type=str, default='evaluations/z=40_best_core.json', # TODO: set 'default=None' for no results saved. Set 'evaluations/[test name].json' to save some results, e.g. 'evaluations/baseline.json' to save a run and indicate you used the baseline model
+    parser.add_argument('--save-results', type=str, default='evaluations/3.0rewablationstudy.json', # TODO: set 'default=None' for no results saved. Set 'evaluations/[test name].json' to save some results, e.g. 'evaluations/baseline.json' to save a run and indicate you used the baseline model
                         help='Path to save JSON result file')
     
     parser.add_argument('--focus-agent-idx', type=int, default=0, # can change this default='x' x value to get a different intersection of interest in evaluation metric summary
@@ -840,8 +903,8 @@ Examples:
         save_results=args.save_results,
         verbose=args.verbose,
         focus_agent_idx=args.focus_agent_idx,
-        regular_pool=args.regular_pool,
         ev_pool=args.ev_pool,
+        reward_variant=args.reward_variant,
     )
 
 
